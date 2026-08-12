@@ -3,6 +3,39 @@ const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
 
+// Works around a well-documented electron-updater + GitHub Releases issue
+// (net::ERR_HTTP2_SERVER_REFUSED_STREAM / ERR_HTTP2_PROTOCOL_ERROR) where
+// Chromium's HTTP/2 implementation occasionally has trouble with GitHub's
+// release-asset CDN. Forcing HTTP/1.1 for all of the app's network
+// requests avoids the whole class of bug. Must be set before the app is
+// ready, so it's here at the very top of the file.
+app.commandLine.appendSwitch('disable-http2');
+
+// Since this app deliberately minimizes to the tray instead of fully
+// closing (see the closeBehavior setting), it's easy to forget it's
+// already running and accidentally launch a second copy — which would
+// mean two independent processes both polling the shared log and both
+// firing their own notification for the same event. This lock makes any
+// second launch just focus the existing window instead of running
+// alongside it.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', function () {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  runApp();
+}
+
+function runApp() {
+
 let mainWindow = null;
 let tray = null;
 let notifyWindow = null;
@@ -123,6 +156,22 @@ function setUpdateState(patch) {
   sendToRenderer('update-status', updateState);
 }
 
+// electron-updater's HTTP errors often embed the ENTIRE raw response —
+// headers, a full HTML error page body, everything — concatenated into
+// err.message. That's fine for logs, but never fit to show a user.
+// This keeps just the short, meaningful summary at the front of the
+// message (e.g. "429 Too Many Requests ...") and drops everything after
+// the first line, with a hard length cap as a backstop for any other
+// unexpectedly verbose error shape.
+function summarizeUpdateError(err) {
+  var raw = (err && err.message) ? String(err.message) : '';
+  if (!raw) return 'Unknown error checking for updates.';
+  var firstLine = raw.split('\n')[0].trim();
+  if (!firstLine) firstLine = raw.trim();
+  if (firstLine.length > 150) firstLine = firstLine.slice(0, 150) + '…';
+  return firstLine || 'Unknown error checking for updates.';
+}
+
 autoUpdater.on('checking-for-update', function () {
   setUpdateState({ status: 'checking', errorMessage: null });
 });
@@ -146,7 +195,7 @@ autoUpdater.on('update-downloaded', function (info) {
 });
 
 autoUpdater.on('error', function (err) {
-  setUpdateState({ status: 'error', errorMessage: (err && err.message) ? err.message : 'Unknown error checking for updates.' });
+  setUpdateState({ status: 'error', errorMessage: summarizeUpdateError(err) });
 });
 
 // ---- Backend API calls made from the main process (background auto-submit) ----
@@ -175,6 +224,28 @@ async function autoSubmit(type, level, killedBy) {
   } catch (e) {
     console.error('Auto-submit network error:', e);
     notify('Sync Problem', 'Could not reach the server. Check your connection.', 'error');
+  }
+}
+
+async function submitMilestone(type, extra) {
+  const s = loadSettings();
+  if (!s.apiBaseUrl || !s.token) return;
+  try {
+    const body = Object.assign({ type: type }, extra);
+    const res = await fetch(s.apiBaseUrl.replace(/\/$/, '') + '/api/milestone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + s.token },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(function () { return null; });
+      console.error('Milestone submit failed:', data);
+    }
+  } catch (e) {
+    console.error('Milestone submit network error:', e);
+    // Deliberately no user-facing "Sync Problem" notification here — a
+    // missed level-up/AA broadcast is low-stakes compared to a missed
+    // death/ding, not worth interrupting the player over.
   }
 }
 
@@ -298,6 +369,7 @@ function processLogLine(line) {
       }
     } else {
       notify('Level Up!', (watchState.characterName || 'Your character') + ' reached level ' + level + '.', 'levelup');
+      submitMilestone('levelup', { level: level });
     }
     return;
   }
@@ -306,6 +378,7 @@ function processLogLine(line) {
   if (aaMatch) {
     const totalAA = parseInt(aaMatch[1], 10);
     notify('AA Gained!', (watchState.characterName || 'Your character') + ' has gained an AA! (now has ' + totalAA + ' ability point' + (totalAA === 1 ? '' : 's') + ')', 'aa');
+    submitMilestone('aa', { aaTotal: totalAA });
     return;
   }
 
@@ -323,12 +396,25 @@ function processLogLine(line) {
 // ---- Shared log polling (for OTHER players' death/ding announcements) ----
 
 var lastSeenLogLength = null;
+var pollInFlight = false; // guards against overlapping polls if a request runs long
 
 async function pollSharedLog() {
-  const s = loadSettings();
-  if (!s.apiBaseUrl) return;
+  if (pollInFlight) return; // a previous poll hasn't finished yet — skip this tick rather than risk double-processing the same entries
+  pollInFlight = true;
   try {
-    const res = await fetch(s.apiBaseUrl.replace(/\/$/, '') + '/api/kv?key=log');
+    await pollSharedLogInner();
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+async function pollSharedLogInner() {
+  const s = loadSettings();
+  if (!s.apiBaseUrl || !s.token) return;
+  try {
+    const res = await fetch(s.apiBaseUrl.replace(/\/$/, '') + '/api/kv?key=log', {
+      headers: { 'Authorization': 'Bearer ' + s.token }
+    });
     const data = await res.json().catch(function () { return null; });
     if (!data || typeof data.value !== 'string') return;
     const log = JSON.parse(data.value);
@@ -349,6 +435,10 @@ async function pollSharedLog() {
           notify('Death Announcement', entry.name + ' died at level ' + (entry.level || '?') + '.', 'death');
         } else if (entry.type === 'ding') {
           notify('Level 50!', entry.name + ' reached level 50!', 'ding');
+        } else if (entry.type === 'levelup') {
+          notify('Level Up!', entry.name + ' reached level ' + entry.level + '.', 'levelup');
+        } else if (entry.type === 'aa') {
+          notify('AA Gained!', entry.name + ' has gained an AA! (now has ' + entry.aaTotal + ' ability point' + (entry.aaTotal === 1 ? '' : 's') + ')', 'aa');
         }
       });
       sendToRenderer('log-updated', log);
@@ -425,6 +515,14 @@ ipcMain.handle('character-unlocked', function () {
   watchState.characterActive = false;
 });
 
+ipcMain.handle('group-changed', function () {
+  // The group's log is a completely different array now — reset so the
+  // next poll re-baselines instead of either missing new entries (if the
+  // new group's log is shorter) or notifying about the new group's
+  // entire history at once (if it's longer).
+  lastSeenLogLength = null;
+});
+
 ipcMain.handle('get-app-version', function () {
   return app.getVersion();
 });
@@ -435,13 +533,13 @@ ipcMain.handle('get-update-status', function () {
 
 ipcMain.handle('check-for-updates', function () {
   autoUpdater.checkForUpdates().catch(function (err) {
-    setUpdateState({ status: 'error', errorMessage: (err && err.message) ? err.message : 'Could not check for updates.' });
+    setUpdateState({ status: 'error', errorMessage: summarizeUpdateError(err) || 'Could not check for updates.' });
   });
 });
 
 ipcMain.handle('download-update', function () {
   autoUpdater.downloadUpdate().catch(function (err) {
-    setUpdateState({ status: 'error', errorMessage: (err && err.message) ? err.message : 'Could not download the update.' });
+    setUpdateState({ status: 'error', errorMessage: summarizeUpdateError(err) || 'Could not download the update.' });
   });
 });
 
@@ -532,3 +630,5 @@ app.on('window-all-closed', function () {
 app.on('before-quit', function () {
   app.isQuitting = true;
 });
+
+} // end runApp()

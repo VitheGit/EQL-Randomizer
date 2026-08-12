@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('eqlApp', {
   notifyCharacterUnlocked: function () {
     return ipcRenderer.invoke('character-unlocked');
   },
+  notifyGroupChanged: function () {
+    return ipcRenderer.invoke('group-changed');
+  },
   onLevelUpdate: function (callback) {
     ipcRenderer.on('level-update', function (event, level) { callback(level); });
   },

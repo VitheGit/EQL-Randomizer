@@ -33,8 +33,10 @@
     settingsLogFilePath: '', settingsCharacterName: '',
     watching: false, currentDetectedLevel: null, settingsSaved: false,
     closeBehavior: 'tray', // 'tray' | 'quit'
+    groupName: '', groupInput: '', groupSaved: false,
     appVersion: '',
     updateStatus: { status: 'idle', version: null, progress: 0, errorMessage: null },
+    updateCheckCooldownUntil: 0, // timestamp (ms) - Check for Updates button stays disabled until this passes
 
     confirmingClear: null, clearInput: '', clearError: '', clearBusy: false,
 
@@ -98,6 +100,33 @@
   function abbrClass(name) {
     return CLASS_ABBR[name] || name; // falls back to the full name if unrecognized
   }
+
+  // Native title-attribute tooltips ignore CSS entirely (no word-wrap,
+  // no max-width) — the only way to control their line length is to
+  // insert real line breaks, which native tooltips DO respect.
+  function wrapTooltipText(str, maxLineLength) {
+    maxLineLength = maxLineLength || 100;
+    var words = str.split(' ');
+    var lines = [];
+    var currentLine = '';
+    words.forEach(function (word) {
+      var candidate = currentLine ? (currentLine + ' ' + word) : word;
+      if (candidate.length > maxLineLength) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = candidate;
+      }
+    });
+    if (currentLine) lines.push(currentLine);
+    return lines.join('\n');
+  }
+
+  var MODE_DESCRIPTIONS = {
+    hardcore: wrapTooltipText('This is a perma-death mode!  Create a new character with the race and classes that were given to you.  If you die, immediately log out and delete the character!'),
+    ssf: wrapTooltipText('This is a Solo-Self Found mode.  You are not allowed to trade with other players, and no group with other players.  No outside help at all.'),
+    path: wrapTooltipText('This will generate a random leveling path for your character to follow.  You are expected to only hunt, and use items from the zones given to you.  An extra difficulty if you so desire!')
+  };
 
   function formatStamp(date) {
     var d = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -246,6 +275,10 @@
       text = '<strong class="ding-glow">&#127881; ' + who + ' hit Level 50!:</strong>' + buildTag + pathTag + manualTag;
     } else if (entry.type === 'retired') {
       text = '<strong>' + who + ' retired (casual):</strong>' + buildTag + pathTag;
+    } else if (entry.type === 'levelup') {
+      text = '<strong>' + who + ' reached level ' + escapeHtml(entry.level) + ':</strong>' + buildTag + pathTag;
+    } else if (entry.type === 'aa') {
+      text = '<strong>&#128142; ' + who + ' gained an AA:</strong>' + buildTag + pathTag;
     } else {
       text = '<strong>' + who + ' died' + (entry.level ? ' at level ' + escapeHtml(entry.level) : '') + ':</strong>' + buildTag + killedByTag + pathTag + manualTag;
     }
@@ -446,15 +479,15 @@
 
     if (!state.locked && !state.manualMode) {
       html += '<div class="toggles-row">' +
-        '<label class="toggle"><input type="checkbox" id="in-hardcore"' + (state.hardcoreMode ? ' checked' : '') + ' /> Hardcore</label>' +
-        '<label class="toggle"><input type="checkbox" id="in-ssf"' + (state.ssfToggle ? ' checked' : '') + ' /> SSF</label>' +
-        '<label class="toggle"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.hardcore) + '"><input type="checkbox" id="in-hardcore"' + (state.hardcoreMode ? ' checked' : '') + ' /> Hardcore</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.ssf) + '"><input type="checkbox" id="in-ssf"' + (state.ssfToggle ? ' checked' : '') + ' /> SSF</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.path) + '"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
       '</div>' +
-      '<p class="hint">* Only Hardcore characters are eligible for the leaderboard. SSF = Solo Self Found, no trading with other players.</p>';
+      '<p class="hint">* Only Hardcore characters are eligible for the leaderboard</p>';
     } else if (!state.locked && state.manualMode) {
       html += '<div class="toggles-row">' +
-        '<label class="toggle"><input type="checkbox" id="in-ssf"' + (state.ssfToggle ? ' checked' : '') + ' /> SSF</label>' +
-        '<label class="toggle"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.ssf) + '"><input type="checkbox" id="in-ssf"' + (state.ssfToggle ? ' checked' : '') + ' /> SSF</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.path) + '"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
       '</div>';
     } else if (state.hasPath && state.levelingPath) {
       html += '<div class="card"><h3>Leveling Path</h3><ul class="path-list">' +
@@ -467,7 +500,12 @@
     var watchBadge = state.watching
       ? '<span class="status-pill on">&#128065; Watching log file' + (state.currentDetectedLevel ? ' · detected level ' + state.currentDetectedLevel : '') + '</span>'
       : '<span class="status-pill off">&#9888; Not watching a log file — set one up in Settings</span>';
-    html += '<div style="text-align:center;margin-bottom:16px;">' + watchBadge + '</div>';
+    html += '<div style="text-align:center;margin-bottom:8px;">' + watchBadge + '</div>';
+
+    var groupBadge = state.groupName
+      ? '<span class="status-pill on">&#128101; Group: ' + escapeHtml(state.groupName) + '</span>'
+      : '<span class="status-pill off">&#128100; Local only — no group set</span>';
+    html += '<div style="text-align:center;margin-bottom:16px;">' + groupBadge + '</div>';
 
     var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
     html += '<div class="card"><h3>Leaderboard</h3>' +
@@ -481,7 +519,9 @@
         : visibleLb.map(function (row, i) { return renderLbRow(row, i + 1); }).join('')) +
     '</div></div>';
 
-    var visibleLog = state.log.filter(function (entry) { return !!entry.manualBuild === (state.logTab === 'manual'); });
+    var visibleLog = state.log.filter(function (entry) {
+      return entry.type !== 'levelup' && entry.type !== 'aa' && !!entry.manualBuild === (state.logTab === 'manual');
+    });
     html += '<div class="card"><h3>Adventure Log</h3>' +
       '<div class="auth-tabs" style="margin-bottom:10px;">' +
         '<button class="auth-tab' + (state.logTab === 'randomized' ? ' active' : '') + '" id="tab-log-randomized" type="button">Randomized</button>' +
@@ -496,8 +536,28 @@
     return html;
   }
 
+  var updateCooldownTimer = null;
+
+  // Only ticks while a cooldown is actually active — starts on click,
+  // clears itself the moment the cooldown expires, so it's not running
+  // in the background the rest of the time.
+  function startUpdateCooldownTicker() {
+    if (updateCooldownTimer) return; // already running
+    updateCooldownTimer = setInterval(function () {
+      if (Date.now() >= state.updateCheckCooldownUntil) {
+        clearInterval(updateCooldownTimer);
+        updateCooldownTimer = null;
+      }
+      if (state.view === 'settings') render();
+    }, 1000);
+  }
+
   function renderUpdateStatus() {
     var s = state.updateStatus || { status: 'idle' };
+    var cooldownRemaining = Math.max(0, Math.ceil((state.updateCheckCooldownUntil - Date.now()) / 1000));
+    var checkBtnDisabled = cooldownRemaining > 0;
+    var checkBtnLabel = checkBtnDisabled ? 'Check for Updates (' + cooldownRemaining + 's)' : 'Check for Updates';
+
     if (s.status === 'checking') {
       return '<p class="hint">Checking for updates…</p>' +
         '<button class="btn btn-ghost btn-full" disabled>Checking…</button>';
@@ -516,11 +576,11 @@
     }
     if (s.status === 'error') {
       return '<p class="error-text">Could not check for updates: ' + escapeHtml(s.errorMessage || 'Unknown error') + '</p>' +
-        '<button class="btn btn-blue btn-full" id="btn-check-update">Check for Updates</button>';
+        '<button class="btn btn-blue btn-full" id="btn-check-update"' + (checkBtnDisabled ? ' disabled' : '') + '>' + checkBtnLabel + '</button>';
     }
     // 'idle' or 'not-available'
     return '<p class="hint">You\'re on the latest version.</p>' +
-      '<button class="btn btn-blue btn-full" id="btn-check-update">Check for Updates</button>';
+      '<button class="btn btn-blue btn-full" id="btn-check-update"' + (checkBtnDisabled ? ' disabled' : '') + '>' + checkBtnLabel + '</button>';
   }
 
   function renderSettingsView() {
@@ -545,6 +605,15 @@
             ? '<span class="status-pill on">&#128065; Currently watching</span>'
             : '<span class="status-pill off">Not watching yet</span>') +
         '</div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<h3>Group</h3>' +
+        '<div class="field">' +
+          '<label class="field-label">Group Name</label>' +
+          '<input type="text" id="in-group-name" value="' + escapeHtml(state.groupInput) + '" placeholder="Leave blank for local only" />' +
+        '</div>' +
+        '<p class="hint">Type any name you\'d like — anyone who enters the exact same Group Name (not case-sensitive) will share leaderboards, Adventure Log entries, and notifications with you. Leave this blank and everything stays local to just you — nobody else will see your leaderboard, log, or notifications, and you won\'t see anyone else\'s.</p>' +
+        '<button class="btn btn-primary btn-full" id="btn-save-group" style="margin-top:10px;">' + (state.groupSaved ? 'Saved ✓' : 'Save Group') + '</button>' +
       '</div>' +
       '<div class="card">' +
         '<h3>Server</h3>' +
@@ -675,6 +744,11 @@
     var saveSettingsBtn = document.getElementById('btn-save-settings');
     if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', handleSaveSettings);
 
+    var groupInput = document.getElementById('in-group-name');
+    if (groupInput) groupInput.addEventListener('input', function (e) { state.groupInput = e.target.value; state.groupSaved = false; });
+    var saveGroupBtn = document.getElementById('btn-save-group');
+    if (saveGroupBtn) saveGroupBtn.addEventListener('click', handleSaveGroup);
+
     var closeBehaviorSel = document.getElementById('in-close-behavior');
     if (closeBehaviorSel) closeBehaviorSel.addEventListener('change', async function (e) {
       state.closeBehavior = e.target.value;
@@ -684,7 +758,10 @@
 
     var checkUpdateBtn = document.getElementById('btn-check-update');
     if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', function () {
+      if (Date.now() < state.updateCheckCooldownUntil) return; // guard against any stray double-click
       state.updateStatus = { status: 'checking', version: null, progress: 0, errorMessage: null };
+      state.updateCheckCooldownUntil = Date.now() + 30000;
+      startUpdateCooldownTicker();
       render();
       window.eqlApp.checkForUpdates();
     });
@@ -752,6 +829,8 @@
     state.username = data.username;
     applyCharacterFromServer(data.currentCharacter);
     state.screen = 'app';
+    state.groupName = data.group || '';
+    state.groupInput = data.group || '';
 
     var settings = await window.eqlApp.saveSettings({
       apiBaseUrl: state.apiBaseUrl,
@@ -930,6 +1009,23 @@
     render();
   }
 
+  async function handleSaveGroup() {
+    var res = await apiRequest('/api/group', { method: 'POST', body: { group: state.groupInput } });
+    if (!res.ok) {
+      alert((res.data && res.data.error) || 'Could not save that group name.');
+      return;
+    }
+    state.groupName = res.data.group;
+    state.groupInput = res.data.group;
+    state.groupSaved = true;
+    render();
+    // The group's shared data is a completely different dataset now —
+    // reset main's tracking baseline and pull the new group's leaderboard/log.
+    window.eqlApp.notifyGroupChanged();
+    await refreshSharedData();
+    render();
+  }
+
   // ---- Admin actions ----
 
   function handleClearClick(target) {
@@ -1012,6 +1108,8 @@
       if (res.ok) {
         applyCharacterFromServer(res.data.currentCharacter);
         state.screen = 'app';
+        state.groupName = res.data.group || '';
+        state.groupInput = res.data.group || '';
         if (state.locked) {
           window.eqlApp.notifyCharacterLockedSync();
         }

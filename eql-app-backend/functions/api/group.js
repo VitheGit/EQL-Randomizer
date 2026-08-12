@@ -19,6 +19,10 @@ export async function onRequestPost(context) {
   const user = await getUser(env, username);
   if (!user) return json({ error: 'Account no longer exists' }, 401);
 
+  if (user.currentCharacter && user.currentCharacter.locked) {
+    return json({ error: 'You have an active character right now — resolve it first (die, ding, or Roll Again) before changing your group.' }, 409);
+  }
+
   let body = {};
   try { body = await request.json(); } catch (e) { /* ignore */ }
 
