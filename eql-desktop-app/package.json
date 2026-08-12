@@ -1,0 +1,36 @@
+{
+  "name": "eql-legends-randomizer",
+  "version": "1.0.0",
+  "description": "EQ Legends Randomizer - character randomizer with log-file death/level tracking",
+  "main": "main.js",
+  "author": "EQ Legends Randomizer",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.eqlegends.randomizer",
+    "productName": "EQ Legends Randomizer",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

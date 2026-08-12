@@ -1,0 +1,77 @@
+{
+  "routes": [
+    {
+      "routePath": "/api/admin/clear",
+      "mountPath": "/api/admin",
+      "method": "POST",
+      "module": [
+        "api/admin/clear.js:onRequestPost"
+      ]
+    },
+    {
+      "routePath": "/api/auth/login",
+      "mountPath": "/api/auth",
+      "method": "POST",
+      "module": [
+        "api/auth/login.js:onRequestPost"
+      ]
+    },
+    {
+      "routePath": "/api/auth/logout",
+      "mountPath": "/api/auth",
+      "method": "POST",
+      "module": [
+        "api/auth/logout.js:onRequestPost"
+      ]
+    },
+    {
+      "routePath": "/api/auth/register",
+      "mountPath": "/api/auth",
+      "method": "POST",
+      "module": [
+        "api/auth/register.js:onRequestPost"
+      ]
+    },
+    {
+      "routePath": "/api/kv",
+      "mountPath": "/api",
+      "method": "GET",
+      "module": [
+        "api/kv.js:onRequestGet"
+      ]
+    },
+    {
+      "routePath": "/api/me",
+      "mountPath": "/api",
+      "method": "GET",
+      "module": [
+        "api/me.js:onRequestGet"
+      ]
+    },
+    {
+      "routePath": "/api/resolve",
+      "mountPath": "/api",
+      "method": "POST",
+      "module": [
+        "api/resolve.js:onRequestPost"
+      ]
+    },
+    {
+      "routePath": "/api/roll",
+      "mountPath": "/api",
+      "method": "POST",
+      "module": [
+        "api/roll.js:onRequestPost"
+      ]
+    },
+    {
+      "routePath": "/api",
+      "mountPath": "/api",
+      "method": "",
+      "middleware": [
+        "api/_middleware.js:onRequest"
+      ]
+    }
+  ],
+  "baseURL": "/"
+}
