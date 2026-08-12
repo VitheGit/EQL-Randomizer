@@ -33,5 +33,5 @@ export async function onRequestPost(context) {
   }
 
   const token = await createSession(env, user.username);
-  return json({ token: token, username: user.username, currentCharacter: user.currentCharacter || null });
+  return json({ token: token, username: user.username, currentCharacter: user.currentCharacter || null, group: user.group || '' });
 }

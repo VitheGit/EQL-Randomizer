@@ -1,5 +1,6 @@
 import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser, saveUser } from '../_lib/auth-users.js';
+import { logKeyFor } from '../_lib/groups.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -68,10 +69,10 @@ export async function onRequestPost(context) {
     }
   }
 
-  const logRaw = await env.EQL_KV.get('log');
+  const logRaw = await env.EQL_KV.get(logKeyFor(user));
   const log = logRaw ? JSON.parse(logRaw) : [];
   log.push(entry);
-  await env.EQL_KV.put('log', JSON.stringify(log));
+  await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
 
   user.currentCharacter = null;
   await saveUser(env, user);

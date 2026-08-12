@@ -1,4 +1,6 @@
-import { verifyPassword } from '../../_lib/auth-crypto.js';
+import { verifyPassword, getUsernameFromRequest } from '../../_lib/auth-crypto.js';
+import { getUser } from '../../_lib/auth-users.js';
+import { logKeyFor, resetKeyFor } from '../../_lib/groups.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -7,9 +9,18 @@ function json(body, status) {
   });
 }
 
+// Clears only the CALLING USER'S OWN GROUP's data — not the entire
+// backend. This matters now that groups exist: one group's admin
+// passcode use should never be able to wipe another group's history.
 export async function onRequestPost(context) {
   const { request, env } = context;
   if (!env.EQL_KV) return json({ error: 'KV binding "EQL_KV" is not configured on this Pages project.' }, 500);
+
+  const username = await getUsernameFromRequest(request, env);
+  if (!username) return json({ error: 'Not logged in' }, 401);
+
+  const user = await getUser(env, username);
+  if (!user) return json({ error: 'Account no longer exists' }, 401);
 
   let body;
   try {
@@ -42,9 +53,9 @@ export async function onRequestPost(context) {
   }
 
   if (target === 'log') {
-    await env.EQL_KV.put('log', JSON.stringify([]));
+    await env.EQL_KV.put(logKeyFor(user), JSON.stringify([]));
   } else {
-    await env.EQL_KV.put('leaderboard-reset-at', new Date().toISOString());
+    await env.EQL_KV.put(resetKeyFor(user), new Date().toISOString());
   }
 
   return json({ ok: true });

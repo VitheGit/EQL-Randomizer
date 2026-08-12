@@ -45,5 +45,5 @@ export async function onRequestPost(context) {
   await saveUser(env, userRecord);
 
   const token = await createSession(env, userRecord.username);
-  return json({ token: token, username: userRecord.username, currentCharacter: null });
+  return json({ token: token, username: userRecord.username, currentCharacter: null, group: '' });
 }
