@@ -1,10 +1,15 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { autoUpdater } = require('electron-updater');
 
 let mainWindow = null;
 let tray = null;
 let notifyWindow = null;
+
+// ---- Auto-update state ----
+// status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+let updateState = { status: 'idle', version: null, progress: 0, errorMessage: null };
 
 // ---- Settings persistence ----
 
@@ -104,6 +109,46 @@ function sendToRenderer(channel, payload) {
   }
 }
 
+// ---- Auto-update wiring ----
+//
+// autoDownload is deliberately off — the app notifies the user an update
+// exists, but only downloads/installs when they choose to (from Settings),
+// rather than silently using their bandwidth in the background.
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+
+function setUpdateState(patch) {
+  updateState = Object.assign({}, updateState, patch);
+  sendToRenderer('update-status', updateState);
+}
+
+autoUpdater.on('checking-for-update', function () {
+  setUpdateState({ status: 'checking', errorMessage: null });
+});
+
+autoUpdater.on('update-available', function (info) {
+  setUpdateState({ status: 'available', version: info.version, errorMessage: null });
+  notify('Update Available!', 'Version ' + info.version + ' is ready. Go to Settings to update.', 'update');
+});
+
+autoUpdater.on('update-not-available', function () {
+  setUpdateState({ status: 'not-available', version: null, errorMessage: null });
+});
+
+autoUpdater.on('download-progress', function (progress) {
+  setUpdateState({ status: 'downloading', progress: Math.round(progress.percent) });
+});
+
+autoUpdater.on('update-downloaded', function (info) {
+  setUpdateState({ status: 'downloaded', version: info.version, progress: 100, errorMessage: null });
+  notify('Update Ready!', 'Restart the app from Settings to finish installing version ' + info.version + '.', 'update');
+});
+
+autoUpdater.on('error', function (err) {
+  setUpdateState({ status: 'error', errorMessage: (err && err.message) ? err.message : 'Unknown error checking for updates.' });
+});
+
 // ---- Backend API calls made from the main process (background auto-submit) ----
 
 async function autoSubmit(type, level, killedBy) {
@@ -141,6 +186,7 @@ const LEVEL_UP_RE = /\]\s*You have gained a level! Welcome to level (\d+)!/;
 // for other people's deaths, which this app doesn't need to detect from
 // the log at all (that comes from polling the shared server data instead).
 const SELF_DEATH_RE = /\]\s*You have been slain by (.+?)!/;
+const AA_GAIN_RE = /\]\s*You have gained an ability point!\s*You now have (\d+) ability points?\./;
 
 var watchState = {
   timer: null,
@@ -253,6 +299,13 @@ function processLogLine(line) {
     } else {
       notify('Level Up!', (watchState.characterName || 'Your character') + ' reached level ' + level + '.', 'levelup');
     }
+    return;
+  }
+
+  const aaMatch = line.match(AA_GAIN_RE);
+  if (aaMatch) {
+    const totalAA = parseInt(aaMatch[1], 10);
+    notify('AA Gained!', (watchState.characterName || 'Your character') + ' has gained an AA! (now has ' + totalAA + ' ability point' + (totalAA === 1 ? '' : 's') + ')', 'aa');
     return;
   }
 
@@ -372,6 +425,31 @@ ipcMain.handle('character-unlocked', function () {
   watchState.characterActive = false;
 });
 
+ipcMain.handle('get-app-version', function () {
+  return app.getVersion();
+});
+
+ipcMain.handle('get-update-status', function () {
+  return updateState;
+});
+
+ipcMain.handle('check-for-updates', function () {
+  autoUpdater.checkForUpdates().catch(function (err) {
+    setUpdateState({ status: 'error', errorMessage: (err && err.message) ? err.message : 'Could not check for updates.' });
+  });
+});
+
+ipcMain.handle('download-update', function () {
+  autoUpdater.downloadUpdate().catch(function (err) {
+    setUpdateState({ status: 'error', errorMessage: (err && err.message) ? err.message : 'Could not download the update.' });
+  });
+});
+
+ipcMain.handle('install-update', function () {
+  app.isQuitting = true;
+  autoUpdater.quitAndInstall();
+});
+
 // ---- Window & tray ----
 
 function createWindow() {
@@ -429,6 +507,16 @@ app.whenReady().then(function () {
 
   pollSharedLog();
   setInterval(pollSharedLog, 5000);
+
+  // Check for updates a few seconds after launch (not instantly, so it
+  // doesn't compete with initial window/login rendering), then periodically
+  // in case the app stays open for a long play session.
+  setTimeout(function () {
+    autoUpdater.checkForUpdates().catch(function () { /* silent on startup */ });
+  }, 8000);
+  setInterval(function () {
+    autoUpdater.checkForUpdates().catch(function () { /* silent on periodic check */ });
+  }, 4 * 60 * 60 * 1000); // every 4 hours
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -7,7 +7,9 @@
     ding: '&#127881;',
     levelup: '&#11088;',
     error: '&#9888;',
-    info: '&#128276;'
+    info: '&#128276;',
+    update: '&#128260;',
+    aa: '&#128142;'
   };
 
   function escapeHtml(str) {

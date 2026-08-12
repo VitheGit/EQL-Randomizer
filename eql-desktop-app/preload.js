@@ -36,5 +36,23 @@ contextBridge.exposeInMainWorld('eqlApp', {
   },
   onLogUpdated: function (callback) {
     ipcRenderer.on('log-updated', function (event, log) { callback(log); });
+  },
+  getAppVersion: function () {
+    return ipcRenderer.invoke('get-app-version');
+  },
+  getUpdateStatus: function () {
+    return ipcRenderer.invoke('get-update-status');
+  },
+  checkForUpdates: function () {
+    return ipcRenderer.invoke('check-for-updates');
+  },
+  downloadUpdate: function () {
+    return ipcRenderer.invoke('download-update');
+  },
+  installUpdate: function () {
+    return ipcRenderer.invoke('install-update');
+  },
+  onUpdateStatus: function (callback) {
+    ipcRenderer.on('update-status', function (event, payload) { callback(payload); });
   }
 });

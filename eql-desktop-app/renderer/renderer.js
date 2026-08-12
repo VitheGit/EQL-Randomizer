@@ -33,6 +33,8 @@
     settingsLogFilePath: '', settingsCharacterName: '',
     watching: false, currentDetectedLevel: null, settingsSaved: false,
     closeBehavior: 'tray', // 'tray' | 'quit'
+    appVersion: '',
+    updateStatus: { status: 'idle', version: null, progress: 0, errorMessage: null },
 
     confirmingClear: null, clearInput: '', clearError: '', clearBusy: false,
 
@@ -494,6 +496,33 @@
     return html;
   }
 
+  function renderUpdateStatus() {
+    var s = state.updateStatus || { status: 'idle' };
+    if (s.status === 'checking') {
+      return '<p class="hint">Checking for updates…</p>' +
+        '<button class="btn btn-ghost btn-full" disabled>Checking…</button>';
+    }
+    if (s.status === 'available') {
+      return '<p class="note warn" style="text-align:left;margin:0 0 10px;">Version ' + escapeHtml(s.version) + ' is available!</p>' +
+        '<button class="btn btn-primary btn-full" id="btn-download-update">Download Update</button>';
+    }
+    if (s.status === 'downloading') {
+      return '<p class="hint">Downloading update… ' + (s.progress || 0) + '%</p>' +
+        '<button class="btn btn-ghost btn-full" disabled>Downloading…</button>';
+    }
+    if (s.status === 'downloaded') {
+      return '<p class="note warn" style="text-align:left;margin:0 0 10px;">Version ' + escapeHtml(s.version) + ' is downloaded and ready.</p>' +
+        '<button class="btn btn-ding btn-full" id="btn-install-update">Restart && Install Now</button>';
+    }
+    if (s.status === 'error') {
+      return '<p class="error-text">Could not check for updates: ' + escapeHtml(s.errorMessage || 'Unknown error') + '</p>' +
+        '<button class="btn btn-blue btn-full" id="btn-check-update">Check for Updates</button>';
+    }
+    // 'idle' or 'not-available'
+    return '<p class="hint">You\'re on the latest version.</p>' +
+      '<button class="btn btn-blue btn-full" id="btn-check-update">Check for Updates</button>';
+  }
+
   function renderSettingsView() {
     return (
       '<div class="card">' +
@@ -520,6 +549,11 @@
       '<div class="card">' +
         '<h3>Server</h3>' +
         '<p class="hint">Connected to: ' + escapeHtml(state.apiBaseUrl) + '</p>' +
+      '</div>' +
+      '<div class="card">' +
+        '<h3>Updates</h3>' +
+        '<p class="hint">Current version: ' + escapeHtml(state.appVersion || '—') + '</p>' +
+        renderUpdateStatus() +
       '</div>' +
       '<div class="card">' +
         '<h3>App Behavior</h3>' +
@@ -646,6 +680,21 @@
       state.closeBehavior = e.target.value;
       await window.eqlApp.saveSettings({ closeBehavior: state.closeBehavior });
       render();
+    });
+
+    var checkUpdateBtn = document.getElementById('btn-check-update');
+    if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', function () {
+      state.updateStatus = { status: 'checking', version: null, progress: 0, errorMessage: null };
+      render();
+      window.eqlApp.checkForUpdates();
+    });
+    var downloadUpdateBtn = document.getElementById('btn-download-update');
+    if (downloadUpdateBtn) downloadUpdateBtn.addEventListener('click', function () {
+      window.eqlApp.downloadUpdate();
+    });
+    var installUpdateBtn = document.getElementById('btn-install-update');
+    if (installUpdateBtn) installUpdateBtn.addEventListener('click', function () {
+      window.eqlApp.installUpdate();
     });
 
     var clearLogBtn = document.getElementById('btn-clear-log');
@@ -938,6 +987,11 @@
     render();
   });
 
+  window.eqlApp.onUpdateStatus(function (payload) {
+    state.updateStatus = payload;
+    render();
+  });
+
   // ---- Boot ----
 
   (async function init() {
@@ -949,6 +1003,9 @@
     state.token = settings.token || null;
     state.username = settings.username || '';
     state.closeBehavior = settings.closeBehavior || 'tray';
+
+    state.appVersion = await window.eqlApp.getAppVersion();
+    state.updateStatus = await window.eqlApp.getUpdateStatus();
 
     if (state.token && state.apiBaseUrl) {
       var res = await apiRequest('/api/me');
