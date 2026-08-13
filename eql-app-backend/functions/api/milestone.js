@@ -1,6 +1,7 @@
 import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser } from '../_lib/auth-users.js';
 import { logKeyFor } from '../_lib/groups.js';
+import { broadcastEntry } from '../_lib/broadcast.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -68,6 +69,7 @@ export async function onRequestPost(context) {
   const log = logRaw ? JSON.parse(logRaw) : [];
   log.push(entry);
   await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
+  context.waitUntil(broadcastEntry(env, username, user.group, entry));
 
   // Deliberately no saveUser() call — the character stays locked exactly
   // as it was, since a milestone doesn't end anyone's run.

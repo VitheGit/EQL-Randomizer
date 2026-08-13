@@ -12,6 +12,19 @@
     aa: '&#128142;'
   };
 
+  var deathSound = new Audio('sounds/kgb_dth.wav');
+  deathSound.volume = 0.5;
+
+  function playDeathSound() {
+    // Rewind first so rapid-fire deaths (e.g. group wipes) each play from
+    // the start rather than getting silently dropped while one is still
+    // playing.
+    try {
+      deathSound.currentTime = 0;
+      deathSound.play().catch(function () { /* browser autoplay quirks — not worth surfacing to the user */ });
+    } catch (e) { /* ignore playback errors */ }
+  }
+
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -21,6 +34,8 @@
   function addToast(payload) {
     var id = 'toast-' + (counter++);
     var icon = ICONS[payload.kind] || ICONS.info;
+
+    if (payload.kind === 'death') playDeathSound();
 
     var el = document.createElement('div');
     el.className = 'toast';

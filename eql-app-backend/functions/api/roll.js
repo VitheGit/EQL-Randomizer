@@ -2,6 +2,7 @@ import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser, saveUser } from '../_lib/auth-users.js';
 import { drawCharacter, generateLevelingPath, RACES, CLASSES, isEligible } from '../_lib/gamedata.js';
 import { logKeyFor } from '../_lib/groups.js';
+import { broadcastEntry } from '../_lib/broadcast.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -91,7 +92,7 @@ export async function onRequestPost(context) {
 
   const logRaw = await env.EQL_KV.get(logKeyFor(user));
   const log = logRaw ? JSON.parse(logRaw) : [];
-  log.push({
+  const entry = {
     type: 'roll',
     time: new Date().toISOString(),
     name: username,
@@ -104,8 +105,10 @@ export async function onRequestPost(context) {
     path: character.path,
     manualBuild: character.manualBuild,
     ssf: character.ssf
-  });
+  };
+  log.push(entry);
   await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
+  context.waitUntil(broadcastEntry(env, username, user.group, entry));
 
   return json({ character: character });
 }

@@ -25,8 +25,9 @@
     manualRace: '', manualPrimary: '', manualSecondary: '', manualTertiary: '',
 
     confirmingDeath: false, deathLevel: '',
+    confirmingDing: false, dingLevel: '',
 
-    log: [], leaderboard: [],
+    log: [], leaderboard: [], leaderboardResetAt: null,
     bottomPanelTab: 'leaderboard', // 'leaderboard' | 'log'
     lbTab: 'randomized', // 'randomized' | 'manual'
     logTab: 'randomized', // 'randomized' | 'manual'
@@ -226,8 +227,11 @@
     return byName;
   }
 
-  function computeLeaderboard(log) {
-    var byName = computeRuns(log);
+  function computeLeaderboard(log, resetAt) {
+    var lbLog = resetAt
+      ? log.filter(function (e) { return new Date(e.time) > new Date(resetAt); })
+      : log;
+    var byName = computeRuns(lbLog);
     var rows = [];
     Object.keys(byName).forEach(function (name) {
       byName[name].runs.forEach(function (run) {
@@ -264,7 +268,7 @@
   }
 
   function refreshLeaderboardFromLog() {
-    state.leaderboard = computeLeaderboard(state.log);
+    state.leaderboard = computeLeaderboard(state.log, state.leaderboardResetAt);
   }
 
   async function refreshSharedData() {
@@ -272,6 +276,8 @@
     if (res.ok && res.data && typeof res.data.value === 'string') {
       try { state.log = JSON.parse(res.data.value); } catch (e) { state.log = []; }
     }
+    var resetRes = await apiRequest('/api/kv?key=leaderboard-reset-at');
+    state.leaderboardResetAt = (resetRes.ok && resetRes.data && typeof resetRes.data.value === 'string') ? resetRes.data.value : null;
     refreshLeaderboardFromLog();
   }
 
@@ -328,6 +334,9 @@
       text = '<strong>' + who + ' reached level ' + escapeHtml(entry.level) + ':</strong>' + buildTag + pathTag;
     } else if (entry.type === 'aa') {
       text = '<strong>&#128142; ' + who + ' gained an AA:</strong>' + buildTag + pathTag;
+    } else if (entry.type === 'cleared') {
+      var clearedWhat = entry.target === 'leaderboard' ? 'Leaderboard' : 'Log';
+      text = '<em style="opacity:0.8;">' + clearedWhat + ' was cleared on ' + escapeHtml(formatStamp(new Date(entry.time))) + ' by ' + escapeHtml(entry.name || 'Unknown') + '</em>';
     } else {
       text = '<strong>' + who + ' died' + (entry.level ? ' at level ' + escapeHtml(entry.level) : '') + ':</strong>' + buildTag + killedByTag + pathTag + manualTag;
     }
@@ -467,7 +476,7 @@
       '</div>' +
       (!state.primary
         ? '<p class="note">Click Randomize! or Create Manually to draw your character.</p>'
-        : state.locked && !state.confirmingDeath
+        : state.locked && !state.confirmingDeath && !state.confirmingDing
           ? '<p class="note warn">' + (state.hardcore ? 'Locked in — eligible for the leaderboard. Deaths/level 50 are detected automatically from your log file.' : 'Casual character. Click "Roll Again" whenever you\'re ready.') + (state.manualBuild ? ' <span style="opacity:0.75">(manually built)</span>' : '') + '</p>'
           : '') +
     '</div>';
@@ -489,6 +498,28 @@
         '<div class="actions">' +
           '<button class="btn btn-died" id="btn-confirm-death"' + (state.resolving ? ' disabled' : '') + '>Confirm Death</button>' +
           '<button class="btn btn-ghost" id="btn-cancel-death">Cancel</button>' +
+        '</div>' +
+      '</div>';
+    }
+
+    if (state.locked && state.confirmingDing) {
+      var autoLevelKnownForDing = state.watching && state.currentDetectedLevel;
+      html += '<div class="card" style="max-width:320px;margin:0 auto 16px;">' +
+        (autoLevelKnownForDing
+          ? '<label class="field-label">Current Level</label>' +
+            '<p style="text-align:center;font-size:20px;font-weight:700;margin:4px 0 2px;">' + escapeHtml(state.currentDetectedLevel) + '</p>' +
+            '<p class="hint">Detected automatically from your log file.</p>'
+          : '<label class="field-label">Current Level</label>' +
+            '<select id="in-ding-level">' +
+              '<option value="" disabled' + (state.dingLevel ? '' : ' selected') + '>Select level</option>' +
+              Array.from({ length: 50 }, function (_, i) { return i + 1; }).map(function (lvl) {
+                return '<option value="' + lvl + '"' + (String(lvl) === String(state.dingLevel) ? ' selected' : '') + '>' + lvl + '</option>';
+              }).join('') +
+            '</select>') +
+        '<p class="hint">Level 50 completes this character (counts as a finished run on the leaderboard). Any other level just updates your live standing.</p>' +
+        '<div class="actions">' +
+          '<button class="btn btn-ding" id="btn-confirm-ding"' + (state.resolving ? ' disabled' : '') + '>Confirm</button>' +
+          '<button class="btn btn-ghost" id="btn-cancel-ding">Cancel</button>' +
         '</div>' +
       '</div>';
     }
@@ -534,10 +565,10 @@
     } else {
       html += '<div class="actions">' +
         (state.locked
-          ? (state.confirmingDeath ? ''
+          ? ((state.confirmingDeath || state.confirmingDing) ? ''
               : state.hardcore
-                ? '<button class="btn btn-died" id="btn-died"' + (state.resolving ? ' disabled' : '') + '>I Died (manual)</button>' +
-                  '<button class="btn btn-ding" id="btn-ding"' + (state.resolving ? ' disabled' : '') + '>Ding! Level 50! (manual)</button>'
+                ? '<button class="btn btn-died" id="btn-died"' + (state.resolving ? ' disabled' : '') + '>I Died</button>' +
+                  '<button class="btn btn-ding" id="btn-ding"' + (state.resolving ? ' disabled' : '') + '>Ding!</button>'
                 : '<button class="btn btn-primary" id="btn-roll-again"' + (state.resolving ? ' disabled' : '') + '>Roll Again</button>')
           : '<button class="btn btn-primary" id="btn-roll"' + (state.rolling ? ' disabled' : '') + '>' + (state.rolling ? 'Randomizing…' : 'Randomize!') + '</button>' +
             '<button class="btn btn-ghost" id="btn-manual-mode">Create Manually</button>') +
@@ -585,6 +616,7 @@
 
     if (state.bottomPanelTab === 'log') {
       var visibleLog = state.log.filter(function (entry) {
+        if (entry.type === 'cleared') return true; // a clear event applies to the whole log, not one tab
         if (entry.type === 'aa') return false;
         if (entry.type === 'levelup' && entry.level % 10 !== 0) return false;
         return !!entry.manualBuild === (state.logTab === 'manual');
@@ -722,21 +754,24 @@
       '</div>' +
       '<div class="card">' +
         '<h3>Admin</h3>' +
-        '<p class="hint">Clearing either of these only affects ' + (state.groupName ? 'your current group, "' + escapeHtml(state.groupName) + '"' : 'your local-only data') + ' — other groups (and anyone in a different group) are untouched.</p>' +
+        '<p class="hint">Clearing either of these only affects ' + (state.groupName ? 'your current group, "' + escapeHtml(state.groupName) + '"' : 'your local-only data') + ' — other groups (and anyone in a different group) are untouched. No passcode needed anymore — just type your group\'s name to confirm.</p>' +
         (!state.confirmingClear
           ? '<div class="actions">' +
               '<button class="btn btn-ghost" id="btn-clear-log" type="button">Clear Log for ' + (state.groupName ? 'My Group' : 'Me') + '</button>' +
               '<button class="btn btn-ghost" id="btn-clear-lb" type="button">Clear Leaderboard for ' + (state.groupName ? 'My Group' : 'Me') + '</button>' +
             '</div>'
-          : '<div class="field">' +
-              '<label class="field-label">Enter Passcode to Clear the ' + (state.confirmingClear === 'log' ? 'Log' : 'Leaderboard') + ' for ' + (state.groupName ? '"' + escapeHtml(state.groupName) + '"' : 'Yourself (Local Only)') + '</label>' +
-              '<input type="password" id="in-clear-passcode" value="' + escapeHtml(state.clearInput) + '" autocomplete="off"' + (state.clearBusy ? ' disabled' : '') + ' />' +
-              (state.clearError ? '<p class="error-text">' + escapeHtml(state.clearError) + '</p>' : '') +
-              '<div class="actions">' +
-                '<button class="btn btn-died" id="btn-confirm-clear"' + (state.clearBusy ? ' disabled' : '') + '>' + (state.clearBusy ? 'Checking…' : 'Confirm Clear') + '</button>' +
-                '<button class="btn btn-ghost" id="btn-cancel-clear"' + (state.clearBusy ? ' disabled' : '') + '>Cancel</button>' +
-              '</div>' +
-            '</div>') +
+          : (function () {
+              var expected = state.groupName || '(local only)';
+              return '<div class="field">' +
+                '<label class="field-label">Type "' + escapeHtml(expected) + '" to Confirm Clearing the ' + (state.confirmingClear === 'log' ? 'Log' : 'Leaderboard') + '</label>' +
+                '<input type="text" id="in-clear-confirm" value="' + escapeHtml(state.clearInput) + '" autocomplete="off" placeholder="' + escapeHtml(expected) + '"' + (state.clearBusy ? ' disabled' : '') + ' />' +
+                (state.clearError ? '<p class="error-text">' + escapeHtml(state.clearError) + '</p>' : '') +
+                '<div class="actions">' +
+                  '<button class="btn btn-died" id="btn-confirm-clear"' + (state.clearBusy ? ' disabled' : '') + '>' + (state.clearBusy ? 'Clearing…' : 'Confirm Clear') + '</button>' +
+                  '<button class="btn btn-ghost" id="btn-cancel-clear"' + (state.clearBusy ? ' disabled' : '') + '>Cancel</button>' +
+                '</div>' +
+              '</div>';
+            })()) +
       '</div>'
     );
   }
@@ -780,7 +815,11 @@
       render();
     });
     var dingBtn = document.getElementById('btn-ding');
-    if (dingBtn) dingBtn.addEventListener('click', handleDing);
+    if (dingBtn) dingBtn.addEventListener('click', function () {
+      state.confirmingDing = true;
+      state.dingLevel = (state.watching && state.currentDetectedLevel) ? String(state.currentDetectedLevel) : '';
+      render();
+    });
     var rollAgainBtn = document.getElementById('btn-roll-again');
     if (rollAgainBtn) rollAgainBtn.addEventListener('click', handleRollAgain);
 
@@ -790,6 +829,13 @@
     if (confirmDeathBtn) confirmDeathBtn.addEventListener('click', handleConfirmDeath);
     var cancelDeathBtn = document.getElementById('btn-cancel-death');
     if (cancelDeathBtn) cancelDeathBtn.addEventListener('click', function () { state.confirmingDeath = false; render(); });
+
+    var dingLevelSel = document.getElementById('in-ding-level');
+    if (dingLevelSel) dingLevelSel.addEventListener('change', function (e) { state.dingLevel = e.target.value; });
+    var confirmDingBtn = document.getElementById('btn-confirm-ding');
+    if (confirmDingBtn) confirmDingBtn.addEventListener('click', handleConfirmDing);
+    var cancelDingBtn = document.getElementById('btn-cancel-ding');
+    if (cancelDingBtn) cancelDingBtn.addEventListener('click', function () { state.confirmingDing = false; render(); });
 
     var manualModeBtn = document.getElementById('btn-manual-mode');
     if (manualModeBtn) manualModeBtn.addEventListener('click', function () {
@@ -877,11 +923,11 @@
     if (clearLogBtn) clearLogBtn.addEventListener('click', function () { handleClearClick('log'); });
     var clearLbBtn = document.getElementById('btn-clear-lb');
     if (clearLbBtn) clearLbBtn.addEventListener('click', function () { handleClearClick('leaderboard'); });
-    var clearPasscodeInput = document.getElementById('in-clear-passcode');
-    if (clearPasscodeInput) {
-      clearPasscodeInput.addEventListener('input', function (e) { state.clearInput = e.target.value; });
-      clearPasscodeInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') handleConfirmClear(); });
-      clearPasscodeInput.focus();
+    var clearConfirmInput = document.getElementById('in-clear-confirm');
+    if (clearConfirmInput) {
+      clearConfirmInput.addEventListener('input', function (e) { state.clearInput = e.target.value; });
+      clearConfirmInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') handleConfirmClear(); });
+      clearConfirmInput.focus();
     }
     var confirmClearBtn = document.getElementById('btn-confirm-clear');
     if (confirmClearBtn) confirmClearBtn.addEventListener('click', handleConfirmClear);
@@ -1042,27 +1088,54 @@
     state.deathLevel = '';
     applyCharacterFromServer(null);
     render();
+    window.eqlApp.showNotification('You Died', 'Your character was slain at level ' + levelNum + '.', 'death');
     window.eqlApp.notifyCharacterUnlocked();
     await refreshSharedData();
     render();
   }
 
-  async function handleDing() {
+  async function handleConfirmDing() {
     if (!state.locked || state.resolving) return;
-    state.resolving = true;
-    render();
-    var res = await apiRequest('/api/resolve', { method: 'POST', body: { type: 'ding', manual: true } });
-    state.resolving = false;
-    if (!res.ok) {
-      alert((res.data && res.data.error) || 'Could not record that.');
-      render();
+    var levelNum = Number(state.dingLevel);
+    if (!state.dingLevel || !Number.isFinite(levelNum) || levelNum < 1 || levelNum > 50) {
+      alert('Select your current level first.');
       return;
     }
-    applyCharacterFromServer(null);
+    state.resolving = true;
     render();
-    window.eqlApp.notifyCharacterUnlocked();
-    await refreshSharedData();
-    render();
+
+    if (levelNum === 50) {
+      // Same as reaching 50 via auto-detection: completes the character.
+      var res = await apiRequest('/api/resolve', { method: 'POST', body: { type: 'ding', manual: true } });
+      state.resolving = false;
+      if (!res.ok) {
+        alert((res.data && res.data.error) || 'Could not record that.');
+        render();
+        return;
+      }
+      applyCharacterFromServer(null);
+      state.confirmingDing = false;
+      render();
+      window.eqlApp.showNotification('Ding! Level 50!', 'Your character reached level 50!', 'ding');
+      window.eqlApp.notifyCharacterUnlocked();
+      await refreshSharedData();
+      render();
+    } else {
+      // Below 50: just a milestone — character stays locked, live
+      // leaderboard standing updates, same as an auto-detected level-up.
+      var msRes = await apiRequest('/api/milestone', { method: 'POST', body: { type: 'levelup', level: levelNum } });
+      state.resolving = false;
+      if (!msRes.ok) {
+        alert((msRes.data && msRes.data.error) || 'Could not record that.');
+        render();
+        return;
+      }
+      state.confirmingDing = false;
+      window.eqlApp.showNotification('Level Up!', 'Your character reached level ' + levelNum + '.', 'levelup');
+      render();
+      await refreshSharedData();
+      render();
+    }
   }
 
   async function handleRollAgain() {
@@ -1142,14 +1215,14 @@
   async function handleConfirmClear() {
     if (state.clearBusy) return;
     var target = state.confirmingClear;
-    var passcode = state.clearInput;
+    var confirmText = state.clearInput;
     state.clearBusy = true;
     state.clearError = '';
     render();
-    var res = await apiRequest('/api/admin/clear', { method: 'POST', body: { target: target, passcode: passcode } });
+    var res = await apiRequest('/api/admin/clear', { method: 'POST', body: { target: target, confirmText: confirmText } });
     state.clearBusy = false;
     if (!res.ok) {
-      state.clearError = (res.data && res.data.error) || 'Wrong passcode. Nothing was cleared.';
+      state.clearError = (res.data && res.data.error) || 'That didn\'t match. Nothing was cleared.';
       render();
       return;
     }

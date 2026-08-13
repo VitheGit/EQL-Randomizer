@@ -1,0 +1,19 @@
+name = "eql-realtime-worker"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+
+# Reuses the SAME KV namespace as the main backend (eql-app-backend), so
+# this worker can look up accounts/sessions/groups without duplicating
+# any user data. Replace <YOUR_KV_NAMESPACE_ID> with the same ID used in
+# the eql-app-backend project's EQL_KV binding.
+[[kv_namespaces]]
+binding = "EQL_KV"
+id = "ac39ac131a3d407e92550928762faf75"
+
+[[durable_objects.bindings]]
+name = "GROUP_ROOM"
+class_name = "GroupRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GroupRoom"]

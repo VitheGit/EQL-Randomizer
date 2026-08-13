@@ -1,6 +1,7 @@
 import { getUsernameFromRequest } from '../../_lib/auth-crypto.js';
 import { getUser } from '../../_lib/auth-users.js';
 import { logKeyFor, resetKeyFor, normalizeGroup } from '../../_lib/groups.js';
+import { broadcastEntry } from '../../_lib/broadcast.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -60,6 +61,7 @@ export async function onRequestPost(context) {
     log.push(clearedEntry);
     await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
   }
+  context.waitUntil(broadcastEntry(env, username, user.group, clearedEntry));
 
   return json({ ok: true });
 }

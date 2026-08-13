@@ -10,8 +10,8 @@ contextBridge.exposeInMainWorld('eqlApp', {
   saveSettings: function (settings) {
     return ipcRenderer.invoke('save-settings', settings);
   },
-  showNotification: function (title, body) {
-    return ipcRenderer.invoke('show-notification', { title: title, body: body });
+  showNotification: function (title, body, kind) {
+    return ipcRenderer.invoke('show-notification', { title: title, body: body, kind: kind });
   },
   getWatchStatus: function () {
     return ipcRenderer.invoke('get-watch-status');

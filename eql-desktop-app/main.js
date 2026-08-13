@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, screen, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const WebSocket = require('ws');
 const { autoUpdater } = require('electron-updater');
 
 // Works around a well-documented electron-updater + GitHub Releases issue
@@ -48,12 +49,33 @@ let updateState = { status: 'idle', version: null, progress: 0, errorMessage: nu
 
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
+// So a fresh install works immediately without anyone needing to know or
+// type the backend URL. Only applied when nothing's been saved yet — an
+// existing settings.json always wins, so this never overrides a value the
+// user (or a future different backend) actually set.
+const DEFAULT_API_BASE_URL = 'https://eqlegends-hardcore.pages.dev';
+
+// The separate Durable Object worker that pushes live updates over
+// WebSocket, replacing constant polling. Only used to trigger an
+// immediate check when something actually happens — the log data itself
+// still comes from the same /api/kv endpoint as always, so this worker
+// never needs to be treated as a second source of truth.
+const DEFAULT_REALTIME_URL = 'https://eql-realtime-worker.bradley-scott82.workers.dev';
+
 function loadSettings() {
+  var settings;
   try {
-    return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
   } catch (e) {
-    return {};
+    settings = {};
   }
+  if (!settings.apiBaseUrl) {
+    settings.apiBaseUrl = DEFAULT_API_BASE_URL;
+  }
+  if (!settings.realtimeUrl) {
+    settings.realtimeUrl = DEFAULT_REALTIME_URL;
+  }
+  return settings;
 }
 
 function saveSettingsToDisk(settings) {
@@ -418,6 +440,96 @@ function processLogLine(line) {
 var lastSeenLogLength = null;
 var pollInFlight = false; // guards against overlapping polls if a request runs long
 
+// ---- Realtime WebSocket (low-latency trigger for the poll above) ----
+//
+// This does NOT replace pollSharedLog as the actual data source — it
+// just tells the app to check *right now* instead of waiting for the
+// next scheduled tick. That keeps all the existing, already-tested
+// fetch/diff/notify logic exactly as it was; the socket's only job is
+// cutting the delay down from "up to one poll interval" to "near
+// instant," while letting that interval be turned way down (a rare
+// safety net instead of the primary delivery mechanism).
+var realtimeSocket = null;
+var realtimeReconnectTimer = null;
+var realtimeReconnectDelay = 2000; // starts at 2s, doubles up to the cap below on repeated failures
+var REALTIME_RECONNECT_MAX_DELAY = 60000;
+var realtimeIntentionalClose = false;
+
+function wsUrlFor(httpUrl) {
+  return httpUrl.replace(/\/$/, '').replace(/^https:/, 'wss:').replace(/^http:/, 'ws:') + '/connect';
+}
+
+function connectRealtime() {
+  var s = loadSettings();
+  if (!s.realtimeUrl || !s.token) return;
+
+  // Already connected or actively trying — don't stack up sockets.
+  if (realtimeSocket && (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  clearTimeout(realtimeReconnectTimer);
+
+  var ws;
+  try {
+    ws = new WebSocket(wsUrlFor(s.realtimeUrl), {
+      headers: { Authorization: 'Bearer ' + s.token }
+    });
+  } catch (e) {
+    scheduleRealtimeReconnect();
+    return;
+  }
+  realtimeSocket = ws;
+  realtimeIntentionalClose = false;
+
+  ws.on('open', function () {
+    realtimeReconnectDelay = 2000; // reset backoff on a successful connection
+    // Reconnecting (or connecting for the first time) might mean we
+    // missed something — do one immediate check to catch up.
+    pollSharedLog();
+  });
+
+  ws.on('message', function () {
+    // Payload content doesn't matter here — any message means "something
+    // changed," and the existing poll fetches the real, current data.
+    pollSharedLog();
+  });
+
+  ws.on('close', function () {
+    if (realtimeSocket === ws) realtimeSocket = null;
+    if (!realtimeIntentionalClose) scheduleRealtimeReconnect();
+  });
+
+  ws.on('error', function () {
+    // 'close' fires right after 'error' for connection failures, which
+    // schedules the reconnect — nothing else to do here.
+  });
+}
+
+function scheduleRealtimeReconnect() {
+  clearTimeout(realtimeReconnectTimer);
+  realtimeReconnectTimer = setTimeout(function () {
+    connectRealtime();
+    realtimeReconnectDelay = Math.min(realtimeReconnectDelay * 2, REALTIME_RECONNECT_MAX_DELAY);
+  }, realtimeReconnectDelay);
+}
+
+function disconnectRealtime() {
+  realtimeIntentionalClose = true;
+  clearTimeout(realtimeReconnectTimer);
+  if (realtimeSocket) {
+    try { realtimeSocket.close(); } catch (e) { /* ignore */ }
+    realtimeSocket = null;
+  }
+}
+
+function reconnectRealtimeNow() {
+  // Used when the account's group changes — the server resolves which
+  // "room" to join at connect time, so a stale connection would still
+  // be listening to the old group until it reconnects.
+  disconnectRealtime();
+  connectRealtime();
+}
+
 async function pollSharedLog() {
   if (pollInFlight) return; // a previous poll hasn't finished yet — skip this tick rather than risk double-processing the same entries
   pollInFlight = true;
@@ -499,11 +611,12 @@ ipcMain.handle('save-settings', function (event, newSettings) {
   } else {
     stopLogWatching();
   }
+  connectRealtime();
   return merged;
 });
 
 ipcMain.handle('show-notification', function (event, payload) {
-  notify((payload && payload.title) || 'EQ Legends Randomizer', (payload && payload.body) || '');
+  notify((payload && payload.title) || 'EQ Legends Randomizer', (payload && payload.body) || '', (payload && payload.kind) || 'info');
 });
 
 ipcMain.handle('get-watch-status', function () {
@@ -547,6 +660,7 @@ ipcMain.handle('group-changed', function () {
   // new group's log is shorter) or notifying about the new group's
   // entire history at once (if it's longer).
   lastSeenLogLength = null;
+  reconnectRealtimeNow();
 });
 
 // Only these exact URLs can ever be opened externally — the renderer
@@ -654,7 +768,8 @@ app.whenReady().then(function () {
   }
 
   pollSharedLog();
-  setInterval(pollSharedLog, 2000);
+  setInterval(pollSharedLog, 5 * 60 * 1000); // rare safety net now — the WebSocket is the real delivery mechanism
+  connectRealtime();
 
   // Check for updates a few seconds after launch (not instantly, so it
   // doesn't compete with initial window/login rendering), then periodically
@@ -679,6 +794,7 @@ app.on('window-all-closed', function () {
 
 app.on('before-quit', function () {
   app.isQuitting = true;
+  disconnectRealtime();
 });
 
 } // end runApp()
