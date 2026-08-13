@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, screen, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
@@ -156,6 +156,15 @@ function setUpdateState(patch) {
   sendToRenderer('update-status', updateState);
 }
 
+// Tracks whether the check currently in flight was started by the user
+// clicking "Check for Updates," as opposed to the automatic background
+// check (on launch, and every 4 hours). Background checks that fail
+// (e.g. a transient GitHub rate limit) shouldn't leave a stale error
+// sitting in the UI for the user to stumble across hours later when they
+// weren't even asking — only a check THEY just triggered should surface
+// its own error.
+var manualCheckInFlight = false;
+
 // electron-updater's HTTP errors often embed the ENTIRE raw response —
 // headers, a full HTML error page body, everything — concatenated into
 // err.message. That's fine for logs, but never fit to show a user.
@@ -179,10 +188,12 @@ autoUpdater.on('checking-for-update', function () {
 autoUpdater.on('update-available', function (info) {
   setUpdateState({ status: 'available', version: info.version, errorMessage: null });
   notify('Update Available!', 'Version ' + info.version + ' is ready. Go to Settings to update.', 'update');
+  manualCheckInFlight = false;
 });
 
 autoUpdater.on('update-not-available', function () {
   setUpdateState({ status: 'not-available', version: null, errorMessage: null });
+  manualCheckInFlight = false;
 });
 
 autoUpdater.on('download-progress', function (progress) {
@@ -195,7 +206,16 @@ autoUpdater.on('update-downloaded', function (info) {
 });
 
 autoUpdater.on('error', function (err) {
-  setUpdateState({ status: 'error', errorMessage: summarizeUpdateError(err) });
+  if (manualCheckInFlight) {
+    setUpdateState({ status: 'error', errorMessage: summarizeUpdateError(err) });
+  } else {
+    // Silent background failure — log it, but don't leave a stale error
+    // sitting in the UI. Still has to move OFF the 'checking' state
+    // though, or the UI gets stuck showing "Checking..." forever.
+    console.error('Background update check failed silently:', err);
+    setUpdateState({ status: 'idle', errorMessage: null });
+  }
+  manualCheckInFlight = false;
 });
 
 // ---- Backend API calls made from the main process (background auto-submit) ----
@@ -443,7 +463,13 @@ async function pollSharedLogInner() {
       });
       sendToRenderer('log-updated', log);
     }
-    lastSeenLogLength = log.length;
+    // Only ever move forward. Cloudflare KV has eventual consistency —
+    // a read can occasionally come back momentarily stale/shorter than a
+    // previous read while writes are still propagating. If we let that
+    // pull the baseline backward, a later poll that sees the real
+    // (longer) log again would re-detect already-notified entries as
+    // "new" and fire duplicate notifications for them.
+    lastSeenLogLength = Math.max(lastSeenLogLength, log.length);
   } catch (e) {
     // Transient network errors are expected occasionally; ignore quietly.
   }
@@ -523,6 +549,21 @@ ipcMain.handle('group-changed', function () {
   lastSeenLogLength = null;
 });
 
+// Only these exact URLs can ever be opened externally — the renderer
+// can't be trusted to send an arbitrary URL through to shell.openExternal,
+// even though this app only ever sends its own known links today.
+const ALLOWED_EXTERNAL_LINKS = [
+  'https://eqlwiki.com/',
+  'https://eqlposky.com/',
+  'https://jmoyers.github.io/everquest-companion/'
+];
+
+ipcMain.handle('open-external-link', function (event, url) {
+  if (ALLOWED_EXTERNAL_LINKS.indexOf(url) !== -1) {
+    shell.openExternal(url);
+  }
+});
+
 ipcMain.handle('get-app-version', function () {
   return app.getVersion();
 });
@@ -532,8 +573,10 @@ ipcMain.handle('get-update-status', function () {
 });
 
 ipcMain.handle('check-for-updates', function () {
+  manualCheckInFlight = true;
   autoUpdater.checkForUpdates().catch(function (err) {
     setUpdateState({ status: 'error', errorMessage: summarizeUpdateError(err) || 'Could not check for updates.' });
+    manualCheckInFlight = false;
   });
 });
 
@@ -556,6 +599,7 @@ function createWindow() {
     height: 820,
     minWidth: 720,
     minHeight: 600,
+    title: 'EQ Legends Randomizer v' + app.getVersion(),
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -565,6 +609,12 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  // Electron normally syncs the window title to the page's <title> tag once
+  // it loads, which would silently overwrite the version number we just set.
+  mainWindow.on('page-title-updated', function (event) {
+    event.preventDefault();
+  });
 
   mainWindow.on('close', function (e) {
     if (app.isQuitting) return; // real quit via tray menu / setting — let it proceed
@@ -604,7 +654,7 @@ app.whenReady().then(function () {
   }
 
   pollSharedLog();
-  setInterval(pollSharedLog, 5000);
+  setInterval(pollSharedLog, 2000);
 
   // Check for updates a few seconds after launch (not instantly, so it
   // doesn't compete with initial window/login rendering), then periodically

@@ -1,6 +1,6 @@
-import { verifyPassword, getUsernameFromRequest } from '../../_lib/auth-crypto.js';
+import { getUsernameFromRequest } from '../../_lib/auth-crypto.js';
 import { getUser } from '../../_lib/auth-users.js';
-import { logKeyFor, resetKeyFor } from '../../_lib/groups.js';
+import { logKeyFor, resetKeyFor, normalizeGroup } from '../../_lib/groups.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -9,9 +9,12 @@ function json(body, status) {
   });
 }
 
-// Clears only the CALLING USER'S OWN GROUP's data — not the entire
-// backend. This matters now that groups exist: one group's admin
-// passcode use should never be able to wipe another group's history.
+// No passcode anymore — anyone in a group already has full standing to
+// manage that group's own data (they can't touch any other group's data
+// no matter what). The only real risk here is an accidental click, which
+// is what the "type your group name to confirm" step guards against —
+// it's a confirmation, not an authorization boundary, so it's checked
+// server-side mainly to keep a buggy client from skipping it entirely.
 export async function onRequestPost(context) {
   const { request, env } = context;
   if (!env.EQL_KV) return json({ error: 'KV binding "EQL_KV" is not configured on this Pages project.' }, 500);
@@ -29,33 +32,33 @@ export async function onRequestPost(context) {
     return json({ error: 'Invalid request.' }, 400);
   }
 
-  const passcode = body.passcode || '';
   const target = body.target;
   if (target !== 'log' && target !== 'leaderboard') {
     return json({ error: 'Invalid target.' }, 400);
   }
 
-  const adminRaw = await env.EQL_KV.get('admin-passcode');
-  if (!adminRaw) {
-    return json({ error: 'Admin passcode is not configured on the server yet.' }, 500);
+  const expectedConfirm = normalizeGroup(user.group) || '(local only)';
+  const submittedConfirm = (body.confirmText || '').toString().trim();
+  if (submittedConfirm.toLowerCase() !== expectedConfirm.toLowerCase()) {
+    return json({ error: 'That doesn\'t match — type it exactly to confirm.' }, 400);
   }
 
-  let admin;
-  try {
-    admin = JSON.parse(adminRaw);
-  } catch (e) {
-    return json({ error: 'Admin passcode is misconfigured on the server.' }, 500);
-  }
-
-  const ok = await verifyPassword(passcode, admin.salt, admin.hash);
-  if (!ok) {
-    return json({ error: 'Wrong passcode.' }, 401);
-  }
+  const now = new Date().toISOString();
+  const clearedEntry = { type: 'cleared', target: target, time: now, name: username };
 
   if (target === 'log') {
-    await env.EQL_KV.put(logKeyFor(user), JSON.stringify([]));
+    // The log is fully replaced — just the one audit entry remains.
+    await env.EQL_KV.put(logKeyFor(user), JSON.stringify([clearedEntry]));
   } else {
-    await env.EQL_KV.put(resetKeyFor(user), new Date().toISOString());
+    // The leaderboard has no storage of its own — it's computed from the
+    // log, filtered to entries after this reset timestamp. Clearing it
+    // doesn't touch the Adventure Log's history, so the audit entry is
+    // appended rather than replacing anything.
+    await env.EQL_KV.put(resetKeyFor(user), now);
+    const logRaw = await env.EQL_KV.get(logKeyFor(user));
+    const log = logRaw ? JSON.parse(logRaw) : [];
+    log.push(clearedEntry);
+    await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
   }
 
   return json({ ok: true });

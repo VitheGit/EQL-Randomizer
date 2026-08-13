@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('eqlApp', {
   notifyGroupChanged: function () {
     return ipcRenderer.invoke('group-changed');
   },
+  openExternalLink: function (url) {
+    return ipcRenderer.invoke('open-external-link', url);
+  },
   onLevelUpdate: function (callback) {
     ipcRenderer.on('level-update', function (event, level) { callback(level); });
   },

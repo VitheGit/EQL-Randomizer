@@ -27,6 +27,7 @@
     confirmingDeath: false, deathLevel: '',
 
     log: [], leaderboard: [],
+    bottomPanelTab: 'leaderboard', // 'leaderboard' | 'log'
     lbTab: 'randomized', // 'randomized' | 'manual'
     logTab: 'randomized', // 'randomized' | 'manual'
 
@@ -90,6 +91,14 @@
     });
   }
 
+  // A small custom icon (rather than an emoji) so the road and the "?"
+  // can each have their own distinct, controllable color.
+  var PATH_ICON_SVG =
+    '<svg width="16" height="16" viewBox="0 0 24 24" style="vertical-align:-4px;">' +
+      '<path d="M4 22 C4 22 17 20 17 15.5 C17 11 3 11 3 6.5 C3 3.5 11 2.5 13 2" stroke="#2A2016" stroke-width="2.6" fill="none" stroke-linecap="round"/>' +
+      '<text x="20" y="12" font-size="13" font-weight="900" fill="#C0392B" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif">?</text>' +
+    '</svg>';
+
   var CLASS_ABBR = {
     'Enchanter': 'ENC', 'Magician': 'MAG', 'Necromancer': 'NEC', 'Wizard': 'WIZ',
     'Bard': 'BRD', 'Beastlord': 'BST', 'Paladin': 'PAL', 'Ranger': 'RNG',
@@ -122,6 +131,12 @@
     return lines.join('\n');
   }
 
+  var USEFUL_LINKS = [
+    { name: 'EQ Legends Wiki', url: 'https://eqlwiki.com/' },
+    { name: 'EQ Legends Plane of Sky', url: 'https://eqlposky.com/' },
+    { name: 'EQ Legends Companion App', url: 'https://jmoyers.github.io/everquest-companion/' }
+  ];
+
   var MODE_DESCRIPTIONS = {
     hardcore: wrapTooltipText('This is a perma-death mode!  Create a new character with the race and classes that were given to you.  If you die, immediately log out and delete the character!'),
     ssf: wrapTooltipText('This is a Solo-Self Found mode.  You are not allowed to trade with other players, and no group with other players.  No outside help at all.'),
@@ -143,6 +158,15 @@
     if (h || m) parts.push(m + 'm');
     parts.push(sec + 's');
     return parts.join(' ');
+  }
+
+  function formatPathTooltip(path) {
+    if (!path || !path.length) return 'Random Leveling Path';
+    var lines = ['Leveling Path:'];
+    path.forEach(function (b) {
+      lines.push(b.range + ': ' + (b.zone || b.note || 'Anywhere'));
+    });
+    return lines.join('\n');
   }
 
   async function apiRequest(path, options) {
@@ -170,9 +194,18 @@
     var byName = {};
     log.slice().sort(function (a, b) { return new Date(a.time) - new Date(b.time); }).forEach(function (e) {
       var n = e.name || 'Unknown';
-      if (!byName[n]) byName[n] = { lastRollTime: null, runs: [] };
+      if (!byName[n]) byName[n] = { lastRollTime: null, runs: [], current: null };
       if (e.type === 'roll') {
         byName[n].lastRollTime = e.time;
+        byName[n].current = {
+          level: 1, // no levelup entry yet — assume level 1 until we see one
+          race: e.race, primary: e.primary, secondary: e.secondary, tertiary: e.tertiary,
+          hardcore: !!e.hardcore, pathMode: !!e.pathMode, manualBuild: !!e.manualBuild, ssf: !!e.ssf,
+          path: e.path || null,
+          rollTime: e.time
+        };
+      } else if (e.type === 'levelup') {
+        if (byName[n].current) byName[n].current.level = Number(e.level) || byName[n].current.level;
       } else if (e.type === 'died' || e.type === 'ding') {
         var level = e.type === 'ding' ? 50 : (Number(e.level) || 0);
         var duration = byName[n].lastRollTime ? (new Date(e.time) - new Date(byName[n].lastRollTime)) : null;
@@ -181,11 +214,13 @@
           race: e.race, primary: e.primary, secondary: e.secondary, tertiary: e.tertiary,
           hardcore: !!e.hardcore, pathMode: !!e.pathMode,
           killedBy: e.killedBy || null, manual: !!e.manual, manualBuild: !!e.manualBuild,
-          ssf: !!e.ssf
+          ssf: !!e.ssf, path: e.path || null
         });
         byName[n].lastRollTime = null;
+        byName[n].current = null; // resolved — no longer in progress
       } else if (e.type === 'retired') {
         byName[n].lastRollTime = null;
+        byName[n].current = null;
       }
     });
     return byName;
@@ -201,9 +236,23 @@
           name: name, level: run.level, duration: run.duration, race: run.race,
           primary: run.primary, secondary: run.secondary, tertiary: run.tertiary,
           type: run.type, pathMode: run.pathMode, killedBy: run.killedBy, manual: run.manual,
-          manualBuild: run.manualBuild, ssf: run.ssf
+          manualBuild: run.manualBuild, ssf: run.ssf, path: run.path,
+          status: run.type === 'died' ? 'dead' : 'alive'
         });
       });
+      // Still-active, unresolved characters show up too — this is what makes
+      // the leaderboard feel "live" rather than only updating on death/ding.
+      var current = byName[name].current;
+      if (current && current.hardcore) {
+        var elapsed = current.rollTime ? (Date.now() - new Date(current.rollTime)) : null;
+        rows.push({
+          name: name, level: current.level, duration: elapsed, race: current.race,
+          primary: current.primary, secondary: current.secondary, tertiary: current.tertiary,
+          type: 'inprogress', pathMode: current.pathMode, killedBy: null, manual: false,
+          manualBuild: current.manualBuild, ssf: current.ssf, path: current.path,
+          status: 'alive'
+        });
+      }
     });
     rows.sort(function (a, b) {
       if (b.level !== a.level) return b.level - a.level;
@@ -261,7 +310,7 @@
   function renderLogRow(entry) {
     var stamp = formatStamp(new Date(entry.time));
     var who = escapeHtml(entry.name || 'Unknown') + (entry.ssf ? ' <span class="ssf-tag">SSF</span>' : '');
-    var pathTag = entry.pathMode ? ' <span style="opacity:0.7">&#128506;</span>' : '';
+    var pathTag = entry.pathMode ? ' <span class="eql-path-icon" title="' + escapeHtml(formatPathTooltip(entry.path)) + '">' + PATH_ICON_SVG + '</span>' : '';
     var manualTag = entry.manual ? ' <span style="font-size:10px;font-style:italic;opacity:0.65">(manual)</span>' : '';
     var killedByTag = (entry.type === 'died' && entry.killedBy) ? ' <span class="killed-by">— killed by ' + escapeHtml(entry.killedBy) + '</span>' : '';
     var trioTag = (entry.secondary && entry.tertiary)
@@ -287,10 +336,13 @@
 
   function renderLbRow(row, rank) {
     var medal = rank === 1 ? '&#129351; ' : rank === 2 ? '&#129352; ' : rank === 3 ? '&#129353; ' : '';
-    var icon = row.type === 'ding' ? '&#127881; ' : '&#128128; ';
-    var pathIcon = row.pathMode ? '&#128506; ' : '';
+    var icon = row.type === 'ding' ? '&#127881; ' : row.type === 'died' ? '&#128128; ' : '';
+    var pathIcon = row.pathMode ? '<span class="eql-path-icon" title="' + escapeHtml(formatPathTooltip(row.path)) + '">' + PATH_ICON_SVG + '</span> ' : '';
     var manualTag = row.manual ? ' <span style="font-size:10px;font-style:italic;opacity:0.65">(manual)</span>' : '';
     var ssfTag = row.ssf ? ' <span class="ssf-tag">SSF</span>' : '';
+    var statusTag = row.status === 'dead'
+      ? ' <span class="status-tag status-dead">DEAD</span>'
+      : ' <span class="status-tag status-alive">ALIVE</span>';
     var killedByTag = (row.type === 'died' && row.killedBy) ? ' <span class="killed-by">· killed by ' + escapeHtml(row.killedBy) + '</span>' : '';
     var classes = (row.secondary && row.tertiary)
       ? (abbrClass(row.primary) + ' / ' + abbrClass(row.secondary) + ' / ' + abbrClass(row.tertiary))
@@ -298,10 +350,14 @@
     var levelClass = 'lb-level' + (row.type === 'ding' ? ' ding-glow' : '');
     return (
       '<div class="lb-row">' +
-        '<span class="lb-rank">' + medal + '#' + rank + '</span>' +
-        '<span class="lb-name">' + escapeHtml(row.name) + ' <span style="font-weight:400;font-style:italic;color:var(--ink-soft)">(' + escapeHtml(row.race) + ')</span>' + ssfTag + '</span>' +
-        '<span class="' + levelClass + '">' + icon + pathIcon + 'Lvl ' + row.level + manualTag + '</span>' +
-        '<span class="lb-build">' + escapeHtml(classes) + ' · ' + formatDuration(row.duration) + killedByTag + '</span>' +
+        '<span class="lb-rank">#' + rank + '</span>' +
+        '<div class="lb-main">' +
+          '<div class="lb-line1">' +
+            '<span class="lb-name">' + escapeHtml(row.name) + ' <span style="font-weight:400;font-style:italic;color:var(--ink-soft)">(' + escapeHtml(row.race) + ')</span>' + ssfTag + statusTag + (medal ? ' ' + medal : '') + '</span>' +
+            '<span class="' + levelClass + '">' + icon + pathIcon + 'Lvl ' + row.level + manualTag + '</span>' +
+          '</div>' +
+          '<div class="lb-build">' + escapeHtml(classes) + ' · ' + formatDuration(row.duration) + killedByTag + '</div>' +
+        '</div>' +
       '</div>'
     );
   }
@@ -369,9 +425,11 @@
 
     html += '<div class="user-bar"><span>Logged in as <strong>' + escapeHtml(state.username) + '</strong></span>' +
       '<button id="btn-logout">Log out</button>' +
-      '<span style="opacity:0.5">|</span>' +
-      '<button id="tab-view-randomizer">Randomizer</button>' +
-      '<button id="tab-view-settings">Settings</button>' +
+    '</div>';
+
+    html += '<div class="auth-tabs" style="margin-bottom:20px;">' +
+      '<button class="auth-tab' + (state.view === 'randomizer' ? ' active' : '') + '" id="tab-view-randomizer" type="button">Randomizer</button>' +
+      '<button class="auth-tab' + (state.view === 'settings' ? ' active' : '') + '" id="tab-view-settings" type="button">Settings</button>' +
     '</div>';
 
     if (state.view === 'settings') {
@@ -380,6 +438,15 @@
       html += renderRandomizerView();
     }
 
+    html += '<div class="links-bar">' +
+      '<span class="links-bar-label">EQ Legends Useful Links:</span>' +
+      USEFUL_LINKS.map(function (link, i) {
+        return '<a href="#" class="links-bar-item" data-link-index="' + i + '">' + escapeHtml(link.name) + '</a>';
+      }).join('<span class="links-bar-sep">·</span>') +
+    '</div>';
+
+    html += '<p class="legal-footer">EverQuest Legends is a trademark of Darkpaw Games and Game Jawn. This is an unofficial, fan-made tool and is not affiliated with, endorsed by, or sponsored by Darkpaw Games, Game Jawn, or their affiliates.</p>';
+
     root.innerHTML = html;
     bindAppEvents();
   }
@@ -387,7 +454,7 @@
   function renderRandomizerView() {
     var html = '';
 
-    html += '<div class="card">' +
+    html += '<div class="card" id="character-card">' +
       '<p class="result-label">Your Character</p>' +
       '<p class="primary-line">' + (state.primary || '???') + '</p>' +
       '<p class="arrow">&#8595;</p>' +
@@ -507,31 +574,46 @@
       : '<span class="status-pill off">&#128100; Local only — no group set</span>';
     html += '<div style="text-align:center;margin-bottom:16px;">' + groupBadge + '</div>';
 
-    var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
-    html += '<div class="card"><h3>Leaderboard</h3>' +
-      '<div class="auth-tabs" style="margin-bottom:10px;">' +
-        '<button class="auth-tab' + (state.lbTab === 'randomized' ? ' active' : '') + '" id="tab-lb-randomized" type="button">Randomized</button>' +
-        '<button class="auth-tab' + (state.lbTab === 'manual' ? ' active' : '') + '" id="tab-lb-manual" type="button">Manual</button>' +
-      '</div>' +
-      '<div class="list-scroll">' +
-      (visibleLb.length === 0
-        ? '<p class="empty-text">No completed ' + (state.lbTab === 'manual' ? 'manually-built' : 'randomized') + ' Hardcore runs yet.</p>'
-        : visibleLb.map(function (row, i) { return renderLbRow(row, i + 1); }).join('')) +
-    '</div></div>';
+    // Leaderboard and Adventure Log share one card now, switched via an
+    // outer tab pair — each still keeps its own inner Randomized/Manual
+    // sub-tabs, same as before.
+    html += '<div class="card">' +
+      '<div class="auth-tabs" style="margin-bottom:14px;">' +
+        '<button class="auth-tab' + (state.bottomPanelTab === 'leaderboard' ? ' active' : '') + '" id="tab-panel-leaderboard" type="button">Leaderboard</button>' +
+        '<button class="auth-tab' + (state.bottomPanelTab === 'log' ? ' active' : '') + '" id="tab-panel-log" type="button">Adventure Log</button>' +
+      '</div>';
 
-    var visibleLog = state.log.filter(function (entry) {
-      return entry.type !== 'levelup' && entry.type !== 'aa' && !!entry.manualBuild === (state.logTab === 'manual');
-    });
-    html += '<div class="card"><h3>Adventure Log</h3>' +
-      '<div class="auth-tabs" style="margin-bottom:10px;">' +
-        '<button class="auth-tab' + (state.logTab === 'randomized' ? ' active' : '') + '" id="tab-log-randomized" type="button">Randomized</button>' +
-        '<button class="auth-tab' + (state.logTab === 'manual' ? ' active' : '') + '" id="tab-log-manual" type="button">Manual</button>' +
-      '</div>' +
-      '<div class="list-scroll">' +
-      (visibleLog.length === 0
-        ? '<p class="empty-text">No ' + (state.logTab === 'manual' ? 'manually-built' : 'randomized') + ' entries yet.</p>'
-        : visibleLog.slice().reverse().slice(0, 50).map(renderLogRow).join('')) +
-    '</div></div>';
+    if (state.bottomPanelTab === 'log') {
+      var visibleLog = state.log.filter(function (entry) {
+        if (entry.type === 'aa') return false;
+        if (entry.type === 'levelup' && entry.level % 10 !== 0) return false;
+        return !!entry.manualBuild === (state.logTab === 'manual');
+      });
+      html +=
+        '<div class="auth-tabs" style="margin-bottom:10px;">' +
+          '<button class="auth-tab' + (state.logTab === 'randomized' ? ' active' : '') + '" id="tab-log-randomized" type="button">Randomized</button>' +
+          '<button class="auth-tab' + (state.logTab === 'manual' ? ' active' : '') + '" id="tab-log-manual" type="button">Manual</button>' +
+        '</div>' +
+        '<div class="list-scroll">' +
+        (visibleLog.length === 0
+          ? '<p class="empty-text">No ' + (state.logTab === 'manual' ? 'manually-built' : 'randomized') + ' entries yet.</p>'
+          : visibleLog.slice().reverse().slice(0, 50).map(renderLogRow).join('')) +
+      '</div>';
+    } else {
+      var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
+      html +=
+        '<div class="auth-tabs" style="margin-bottom:10px;">' +
+          '<button class="auth-tab' + (state.lbTab === 'randomized' ? ' active' : '') + '" id="tab-lb-randomized" type="button">Randomized</button>' +
+          '<button class="auth-tab' + (state.lbTab === 'manual' ? ' active' : '') + '" id="tab-lb-manual" type="button">Manual</button>' +
+        '</div>' +
+        '<div class="list-scroll">' +
+        (visibleLb.length === 0
+          ? '<p class="empty-text">No completed ' + (state.lbTab === 'manual' ? 'manually-built' : 'randomized') + ' Hardcore runs yet.</p>'
+          : visibleLb.map(function (row, i) { return renderLbRow(row, i + 1); }).join('')) +
+      '</div>';
+    }
+
+    html += '</div>';
 
     return html;
   }
@@ -610,10 +692,13 @@
         '<h3>Group</h3>' +
         '<div class="field">' +
           '<label class="field-label">Group Name</label>' +
-          '<input type="text" id="in-group-name" value="' + escapeHtml(state.groupInput) + '" placeholder="Leave blank for local only" />' +
+          '<input type="text" id="in-group-name" value="' + escapeHtml(state.groupInput) + '" placeholder="Leave blank for local only"' + (state.locked ? ' disabled' : '') + ' />' +
         '</div>' +
         '<p class="hint">Type any name you\'d like — anyone who enters the exact same Group Name (not case-sensitive) will share leaderboards, Adventure Log entries, and notifications with you. Leave this blank and everything stays local to just you — nobody else will see your leaderboard, log, or notifications, and you won\'t see anyone else\'s.</p>' +
-        '<button class="btn btn-primary btn-full" id="btn-save-group" style="margin-top:10px;">' + (state.groupSaved ? 'Saved ✓' : 'Save Group') + '</button>' +
+        (state.locked
+          ? '<p class="note warn" style="text-align:left;margin:0 0 10px;">You have an active character right now — resolve it first before changing your group, so its outcome doesn\'t get split across two different groups\' logs.</p>'
+          : '') +
+        '<button class="btn btn-primary btn-full" id="btn-save-group"' + (state.locked ? ' disabled' : '') + ' style="margin-top:10px;">' + (state.groupSaved ? 'Saved ✓' : 'Save Group') + '</button>' +
       '</div>' +
       '<div class="card">' +
         '<h3>Server</h3>' +
@@ -637,14 +722,14 @@
       '</div>' +
       '<div class="card">' +
         '<h3>Admin</h3>' +
-        '<p class="hint">Clearing either of these affects everyone using this backend, not just you.</p>' +
+        '<p class="hint">Clearing either of these only affects ' + (state.groupName ? 'your current group, "' + escapeHtml(state.groupName) + '"' : 'your local-only data') + ' — other groups (and anyone in a different group) are untouched.</p>' +
         (!state.confirmingClear
           ? '<div class="actions">' +
-              '<button class="btn btn-ghost" id="btn-clear-log" type="button">Clear Log for Everyone</button>' +
-              '<button class="btn btn-ghost" id="btn-clear-lb" type="button">Clear Leaderboard for Everyone</button>' +
+              '<button class="btn btn-ghost" id="btn-clear-log" type="button">Clear Log for ' + (state.groupName ? 'My Group' : 'Me') + '</button>' +
+              '<button class="btn btn-ghost" id="btn-clear-lb" type="button">Clear Leaderboard for ' + (state.groupName ? 'My Group' : 'Me') + '</button>' +
             '</div>'
           : '<div class="field">' +
-              '<label class="field-label">Enter Passcode to Clear the ' + (state.confirmingClear === 'log' ? 'Log' : 'Leaderboard') + ' for Everyone</label>' +
+              '<label class="field-label">Enter Passcode to Clear the ' + (state.confirmingClear === 'log' ? 'Log' : 'Leaderboard') + ' for ' + (state.groupName ? '"' + escapeHtml(state.groupName) + '"' : 'Yourself (Local Only)') + '</label>' +
               '<input type="password" id="in-clear-passcode" value="' + escapeHtml(state.clearInput) + '" autocomplete="off"' + (state.clearBusy ? ' disabled' : '') + ' />' +
               (state.clearError ? '<p class="error-text">' + escapeHtml(state.clearError) + '</p>' : '') +
               '<div class="actions">' +
@@ -659,6 +744,20 @@
   function bindAppEvents() {
     var logoutBtn = document.getElementById('btn-logout');
     if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
+
+    document.querySelectorAll('.links-bar-item').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.preventDefault();
+        var idx = Number(el.getAttribute('data-link-index'));
+        var link = USEFUL_LINKS[idx];
+        if (link) window.eqlApp.openExternalLink(link.url);
+      });
+    });
+
+    var tabPanelLeaderboard = document.getElementById('tab-panel-leaderboard');
+    if (tabPanelLeaderboard) tabPanelLeaderboard.addEventListener('click', function () { state.bottomPanelTab = 'leaderboard'; render(); });
+    var tabPanelLog = document.getElementById('tab-panel-log');
+    if (tabPanelLog) tabPanelLog.addEventListener('click', function () { state.bottomPanelTab = 'log'; render(); });
 
     var tabRandomizer = document.getElementById('tab-view-randomizer');
     if (tabRandomizer) tabRandomizer.addEventListener('click', function () { state.view = 'randomizer'; render(); });
@@ -1010,6 +1109,10 @@
   }
 
   async function handleSaveGroup() {
+    if (state.locked) {
+      alert('You can\'t change your group while you have an active character. Resolve it first (die, ding, or Roll Again), then change your group — otherwise your character\'s death/ding could end up recorded in the wrong group\'s log.');
+      return;
+    }
     var res = await apiRequest('/api/group', { method: 'POST', body: { group: state.groupInput } });
     if (!res.ok) {
       alert((res.data && res.data.error) || 'Could not save that group name.');
