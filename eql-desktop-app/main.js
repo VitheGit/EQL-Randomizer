@@ -75,6 +75,12 @@ function loadSettings() {
   if (!settings.realtimeUrl) {
     settings.realtimeUrl = DEFAULT_REALTIME_URL;
   }
+  if (typeof settings.soundsEnabled !== 'boolean') {
+    settings.soundsEnabled = true; // on by default — only an explicit false (a real saved choice) turns it off
+  }
+  if (typeof settings.notificationsEnabled !== 'boolean') {
+    settings.notificationsEnabled = true;
+  }
   return settings;
 }
 
@@ -143,9 +149,12 @@ function getNotifyWindow() {
 
 function notify(title, body, kind) {
   try {
+    const settings = loadSettings();
+    if (!settings.notificationsEnabled) return; // master switch — nothing shows at all, not even silently
     const win = getNotifyWindow();
+    const soundsEnabled = settings.soundsEnabled;
     const send = function () {
-      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info' });
+      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled });
       if (!win.isVisible()) win.showInactive();
     };
     if (win.webContents.isLoading()) {
@@ -709,9 +718,9 @@ ipcMain.handle('install-update', function () {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1040,
+    width: 1150,
     height: 820,
-    minWidth: 720,
+    minWidth: 1050,
     minHeight: 600,
     title: 'EQ Legends Randomizer v' + app.getVersion(),
     icon: path.join(__dirname, 'build', 'icon.png'),

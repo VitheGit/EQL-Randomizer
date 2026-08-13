@@ -76,7 +76,7 @@ export const LEVEL_BRACKETS = [
   { range: "20-30", zones: ["Splitpaw", "Temple of Cazic-Thule", "Upper Guk", "Najena", "Solusek's Eye (Sol A)", "Castle Mistmoore", "Permafrost"] },
   { range: "30-40", zones: ["Splitpaw", "Lower Guk", "Nagafen's Lair (Sol B)"] },
   { range: "40-46", zones: ["The Hole", "Nagafen's Lair (Sol B)", "Lower Guk", "Permafrost (Bears/Spiders)"] },
-  { range: "46-50", zones: ["Plane of Fear", "Plane of Hate", "Plane of Air"] }
+  { range: "46-50", zones: ["Plane of Fear", "Plane of Hate", "Plane of Sky"] }
 ];
 
 export function generateLevelingPath() {

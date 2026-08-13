@@ -12,16 +12,28 @@
     aa: '&#128142;'
   };
 
-  var deathSound = new Audio('sounds/kgb_dth.wav');
-  deathSound.volume = 0.5;
+  // Each entry: an Audio object plus its own volume. Keyed by
+  // notification kind, so adding another sound later is just one more
+  // entry here rather than a new copy-pasted block.
+  var SOUNDS = {
+    death: { audio: new Audio('sounds/kgb_dth.wav'), volume: 0.5 },
+    aa: { audio: new Audio('sounds/aa_gained.wav'), volume: 0.65 },
+    levelup: { audio: new Audio('sounds/level_up.mp3'), volume: 0.65 },
+    ding: { audio: new Audio('sounds/ding_level50.mp3'), volume: 0.8 }
+  };
+  Object.keys(SOUNDS).forEach(function (key) {
+    SOUNDS[key].audio.volume = SOUNDS[key].volume;
+  });
 
-  function playDeathSound() {
-    // Rewind first so rapid-fire deaths (e.g. group wipes) each play from
-    // the start rather than getting silently dropped while one is still
-    // playing.
+  function playSoundFor(kind) {
+    var s = SOUNDS[kind];
+    if (!s) return;
+    // Rewind first so rapid-fire notifications of the same kind (e.g. a
+    // group wipe, or a fast burst of AA gains) each play from the start
+    // rather than getting silently dropped while one is still playing.
     try {
-      deathSound.currentTime = 0;
-      deathSound.play().catch(function () { /* browser autoplay quirks — not worth surfacing to the user */ });
+      s.audio.currentTime = 0;
+      s.audio.play().catch(function () { /* browser autoplay quirks — not worth surfacing to the user */ });
     } catch (e) { /* ignore playback errors */ }
   }
 
@@ -35,7 +47,7 @@
     var id = 'toast-' + (counter++);
     var icon = ICONS[payload.kind] || ICONS.info;
 
-    if (payload.kind === 'death') playDeathSound();
+    if (payload.soundsEnabled !== false) playSoundFor(payload.kind);
 
     var el = document.createElement('div');
     el.className = 'toast';

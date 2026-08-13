@@ -28,21 +28,22 @@
     confirmingDing: false, dingLevel: '',
 
     log: [], leaderboard: [], leaderboardResetAt: null,
-    bottomPanelTab: 'leaderboard', // 'leaderboard' | 'log'
     lbTab: 'randomized', // 'randomized' | 'manual'
     logTab: 'randomized', // 'randomized' | 'manual'
 
     settingsLogFilePath: '', settingsCharacterName: '',
     watching: false, currentDetectedLevel: null, settingsSaved: false,
     closeBehavior: 'tray', // 'tray' | 'quit'
-    groupName: '', groupInput: '', groupSaved: false,
+    soundsEnabled: true,
+    notificationsEnabled: true,
+    groupName: '', groupInput: '',
     appVersion: '',
     updateStatus: { status: 'idle', version: null, progress: 0, errorMessage: null },
     updateCheckCooldownUntil: 0, // timestamp (ms) - Check for Updates button stays disabled until this passes
 
     confirmingClear: null, clearInput: '', clearError: '', clearBusy: false,
 
-    view: 'randomizer' // 'randomizer' | 'settings'
+    view: 'randomizer' // 'randomizer' | 'leaderboard' | 'log' | 'instructions' | 'settings'
   };
 
   // ---- Helpers ----
@@ -436,16 +437,38 @@
       '<button id="btn-logout">Log out</button>' +
     '</div>';
 
-    html += '<div class="auth-tabs" style="margin-bottom:20px;">' +
-      '<button class="auth-tab' + (state.view === 'randomizer' ? ' active' : '') + '" id="tab-view-randomizer" type="button">Randomizer</button>' +
-      '<button class="auth-tab' + (state.view === 'settings' ? ' active' : '') + '" id="tab-view-settings" type="button">Settings</button>' +
-    '</div>';
+    var NAV_ITEMS = [
+      { view: 'randomizer', label: 'Randomizer' },
+      { view: 'leaderboard', label: 'Leaderboard' },
+      { view: 'log', label: 'Adventure Log' },
+      { view: 'instructions', label: 'Instructions' },
+      { view: 'settings', label: 'Settings' },
+      { view: 'admin', label: 'Admin' }
+    ];
+
+    html += '<div class="app-shell">' +
+      '<div class="sidebar-nav">' +
+        NAV_ITEMS.map(function (item) {
+          return '<button class="sidebar-nav-item' + (state.view === item.view ? ' active' : '') + '" id="nav-' + item.view + '" type="button">' + escapeHtml(item.label) + '</button>';
+        }).join('') +
+      '</div>' +
+      '<div class="main-content">';
 
     if (state.view === 'settings') {
       html += renderSettingsView();
+    } else if (state.view === 'admin') {
+      html += renderAdminView();
+    } else if (state.view === 'leaderboard') {
+      html += renderLeaderboardView();
+    } else if (state.view === 'log') {
+      html += renderLogView();
+    } else if (state.view === 'instructions') {
+      html += renderInstructionsView();
     } else {
       html += renderRandomizerView();
     }
+
+    html += '</div></div>';
 
     html += '<div class="links-bar">' +
       '<span class="links-bar-label">EQ Legends Useful Links:</span>' +
@@ -464,7 +487,7 @@
     var html = '';
 
     html += '<div class="card" id="character-card">' +
-      '<p class="result-label">Your Character</p>' +
+      '<p class="result-label page-title">Your Character</p>' +
       '<p class="primary-line">' + (state.primary || '???') + '</p>' +
       '<p class="arrow">&#8595;</p>' +
       '<p class="race-line">' + (state.race || '???') + '</p>' +
@@ -598,56 +621,57 @@
     var watchBadge = state.watching
       ? '<span class="status-pill on">&#128065; Watching log file' + (state.currentDetectedLevel ? ' · detected level ' + state.currentDetectedLevel : '') + '</span>'
       : '<span class="status-pill off">&#9888; Not watching a log file — set one up in Settings</span>';
-    html += '<div style="text-align:center;margin-bottom:8px;">' + watchBadge + '</div>';
-
     var groupBadge = state.groupName
       ? '<span class="status-pill on">&#128101; Group: ' + escapeHtml(state.groupName) + '</span>'
       : '<span class="status-pill off">&#128100; Local only — no group set</span>';
-    html += '<div style="text-align:center;margin-bottom:16px;">' + groupBadge + '</div>';
-
-    // Leaderboard and Adventure Log share one card now, switched via an
-    // outer tab pair — each still keeps its own inner Randomized/Manual
-    // sub-tabs, same as before.
-    html += '<div class="card">' +
-      '<div class="auth-tabs" style="margin-bottom:14px;">' +
-        '<button class="auth-tab' + (state.bottomPanelTab === 'leaderboard' ? ' active' : '') + '" id="tab-panel-leaderboard" type="button">Leaderboard</button>' +
-        '<button class="auth-tab' + (state.bottomPanelTab === 'log' ? ' active' : '') + '" id="tab-panel-log" type="button">Adventure Log</button>' +
-      '</div>';
-
-    if (state.bottomPanelTab === 'log') {
-      var visibleLog = state.log.filter(function (entry) {
-        if (entry.type === 'cleared') return true; // a clear event applies to the whole log, not one tab
-        if (entry.type === 'aa') return false;
-        if (entry.type === 'levelup' && entry.level % 10 !== 0) return false;
-        return !!entry.manualBuild === (state.logTab === 'manual');
-      });
-      html +=
-        '<div class="auth-tabs" style="margin-bottom:10px;">' +
-          '<button class="auth-tab' + (state.logTab === 'randomized' ? ' active' : '') + '" id="tab-log-randomized" type="button">Randomized</button>' +
-          '<button class="auth-tab' + (state.logTab === 'manual' ? ' active' : '') + '" id="tab-log-manual" type="button">Manual</button>' +
-        '</div>' +
-        '<div class="list-scroll">' +
-        (visibleLog.length === 0
-          ? '<p class="empty-text">No ' + (state.logTab === 'manual' ? 'manually-built' : 'randomized') + ' entries yet.</p>'
-          : visibleLog.slice().reverse().slice(0, 50).map(renderLogRow).join('')) +
-      '</div>';
-    } else {
-      var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
-      html +=
-        '<div class="auth-tabs" style="margin-bottom:10px;">' +
-          '<button class="auth-tab' + (state.lbTab === 'randomized' ? ' active' : '') + '" id="tab-lb-randomized" type="button">Randomized</button>' +
-          '<button class="auth-tab' + (state.lbTab === 'manual' ? ' active' : '') + '" id="tab-lb-manual" type="button">Manual</button>' +
-        '</div>' +
-        '<div class="list-scroll">' +
-        (visibleLb.length === 0
-          ? '<p class="empty-text">No completed ' + (state.lbTab === 'manual' ? 'manually-built' : 'randomized') + ' Hardcore runs yet.</p>'
-          : visibleLb.map(function (row, i) { return renderLbRow(row, i + 1); }).join('')) +
-      '</div>';
-    }
-
-    html += '</div>';
+    html += '<div class="badges-row">' + watchBadge + groupBadge + '</div>';
 
     return html;
+  }
+
+  function renderLeaderboardView() {
+    var html = '<div class="card"><h3 class="page-title">Leaderboard</h3>' +
+      '<p class="hint" style="margin:-6px 0 14px;">Showing: ' + (state.groupName ? escapeHtml(state.groupName) : 'Local') + '</p>';
+    var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
+    html +=
+      '<div class="auth-tabs" style="margin-bottom:10px;">' +
+        '<button class="auth-tab' + (state.lbTab === 'randomized' ? ' active' : '') + '" id="tab-lb-randomized" type="button">Randomized</button>' +
+        '<button class="auth-tab' + (state.lbTab === 'manual' ? ' active' : '') + '" id="tab-lb-manual" type="button">Manual</button>' +
+      '</div>' +
+      '<div class="list-scroll">' +
+      (visibleLb.length === 0
+        ? '<p class="empty-text">No completed ' + (state.lbTab === 'manual' ? 'manually-built' : 'randomized') + ' Hardcore runs yet.</p>'
+        : visibleLb.map(function (row, i) { return renderLbRow(row, i + 1); }).join('')) +
+      '</div></div>';
+    return html;
+  }
+
+  function renderLogView() {
+    var html = '<div class="card"><h3 class="page-title">Adventure Log</h3>' +
+      '<p class="hint" style="margin:-6px 0 14px;">Showing: ' + (state.groupName ? escapeHtml(state.groupName) : 'Local') + '</p>';
+    var visibleLog = state.log.filter(function (entry) {
+      if (entry.type === 'cleared') return true; // a clear event applies to the whole log, not one tab
+      if (entry.type === 'aa') return false;
+      if (entry.type === 'levelup' && entry.level % 10 !== 0) return false;
+      return !!entry.manualBuild === (state.logTab === 'manual');
+    });
+    html +=
+      '<div class="auth-tabs" style="margin-bottom:10px;">' +
+        '<button class="auth-tab' + (state.logTab === 'randomized' ? ' active' : '') + '" id="tab-log-randomized" type="button">Randomized</button>' +
+        '<button class="auth-tab' + (state.logTab === 'manual' ? ' active' : '') + '" id="tab-log-manual" type="button">Manual</button>' +
+      '</div>' +
+      '<div class="list-scroll">' +
+      (visibleLog.length === 0
+        ? '<p class="empty-text">No ' + (state.logTab === 'manual' ? 'manually-built' : 'randomized') + ' entries yet.</p>'
+        : visibleLog.slice().reverse().slice(0, 50).map(renderLogRow).join('')) +
+      '</div></div>';
+    return html;
+  }
+
+  function renderInstructionsView() {
+    return '<div class="card"><h3 class="page-title">Instructions</h3>' +
+      '<p class="hint">Coming soon.</p>' +
+    '</div>';
   }
 
   var updateCooldownTimer = null;
@@ -700,7 +724,7 @@
   function renderSettingsView() {
     return (
       '<div class="card">' +
-        '<h3>Log File Watching</h3>' +
+        '<h3>Settings</h3>' +
         '<div class="field">' +
           '<label class="field-label">EQ Legends Log File</label>' +
           '<div style="display:flex;gap:8px;">' +
@@ -713,15 +737,6 @@
           '<input type="text" id="in-char-name" value="' + escapeHtml(state.settingsCharacterName) + '" placeholder="e.g. Vithe" />' +
         '</div>' +
         '<p class="hint">This is auto-suggested from the log file name, but double-check it matches your character\'s exact name.</p>' +
-        '<button class="btn btn-primary btn-full" id="btn-save-settings" style="margin-top:10px;">' + (state.settingsSaved ? 'Saved ✓' : 'Save Settings') + '</button>' +
-        '<div style="text-align:center;margin-top:12px;">' +
-          (state.watching
-            ? '<span class="status-pill on">&#128065; Currently watching</span>'
-            : '<span class="status-pill off">Not watching yet</span>') +
-        '</div>' +
-      '</div>' +
-      '<div class="card">' +
-        '<h3>Group</h3>' +
         '<div class="field">' +
           '<label class="field-label">Group Name</label>' +
           '<input type="text" id="in-group-name" value="' + escapeHtml(state.groupInput) + '" placeholder="Leave blank for local only"' + (state.locked ? ' disabled' : '') + ' />' +
@@ -730,11 +745,12 @@
         (state.locked
           ? '<p class="note warn" style="text-align:left;margin:0 0 10px;">You have an active character right now — resolve it first before changing your group, so its outcome doesn\'t get split across two different groups\' logs.</p>'
           : '') +
-        '<button class="btn btn-primary btn-full" id="btn-save-group"' + (state.locked ? ' disabled' : '') + ' style="margin-top:10px;">' + (state.groupSaved ? 'Saved ✓' : 'Save Group') + '</button>' +
-      '</div>' +
-      '<div class="card">' +
-        '<h3>Server</h3>' +
-        '<p class="hint">Connected to: ' + escapeHtml(state.apiBaseUrl) + '</p>' +
+        '<button class="btn btn-primary btn-full" id="btn-save-settings" style="margin-top:10px;">' + (state.settingsSaved ? 'Saved ✓' : 'Save Settings') + '</button>' +
+        '<div style="text-align:center;margin-top:12px;">' +
+          (state.watching
+            ? '<span class="status-pill on">&#128065; Currently watching</span>'
+            : '<span class="status-pill off">Not watching yet</span>') +
+        '</div>' +
       '</div>' +
       '<div class="card">' +
         '<h3>Updates</h3>' +
@@ -751,7 +767,16 @@
           '</select>' +
         '</div>' +
         '<p class="hint">If you choose "Quit," the app stops watching your log file entirely until you reopen it — you\'ll need to reopen the app to get death/level notifications again.</p>' +
-      '</div>' +
+        '<label class="toggle" style="margin-top:12px;"><input type="checkbox" id="in-notifications-enabled"' + (state.notificationsEnabled ? ' checked' : '') + ' /> Notifications</label>' +
+        '<p class="hint">Turn off to disable all death/ding/level-up notifications entirely — nothing will show, for you or about anyone else in your group.</p>' +
+        '<label class="toggle" style="margin-top:6px;"><input type="checkbox" id="in-sounds-enabled"' + (state.soundsEnabled ? ' checked' : '') + (state.notificationsEnabled ? '' : ' disabled') + ' /> Notification Sounds</label>' +
+        '<p class="hint">Turn off to keep the visual toasts but silence the death/ding/level-up sound effects.' + (state.notificationsEnabled ? '' : ' (Notifications are off, so this has no effect right now.)') + '</p>' +
+      '</div>'
+    );
+  }
+
+  function renderAdminView() {
+    return (
       '<div class="card">' +
         '<h3>Admin</h3>' +
         '<p class="hint">Clearing either of these only affects ' + (state.groupName ? 'your current group, "' + escapeHtml(state.groupName) + '"' : 'your local-only data') + ' — other groups (and anyone in a different group) are untouched. No passcode needed anymore — just type your group\'s name to confirm.</p>' +
@@ -772,6 +797,10 @@
                 '</div>' +
               '</div>';
             })()) +
+      '</div>' +
+      '<div class="card">' +
+        '<h3>Server</h3>' +
+        '<p class="hint">Connected to: ' + escapeHtml(state.apiBaseUrl) + '</p>' +
       '</div>'
     );
   }
@@ -789,15 +818,14 @@
       });
     });
 
-    var tabPanelLeaderboard = document.getElementById('tab-panel-leaderboard');
-    if (tabPanelLeaderboard) tabPanelLeaderboard.addEventListener('click', function () { state.bottomPanelTab = 'leaderboard'; render(); });
-    var tabPanelLog = document.getElementById('tab-panel-log');
-    if (tabPanelLog) tabPanelLog.addEventListener('click', function () { state.bottomPanelTab = 'log'; render(); });
-
-    var tabRandomizer = document.getElementById('tab-view-randomizer');
-    if (tabRandomizer) tabRandomizer.addEventListener('click', function () { state.view = 'randomizer'; render(); });
-    var tabSettings = document.getElementById('tab-view-settings');
-    if (tabSettings) tabSettings.addEventListener('click', function () { state.view = 'settings'; state.settingsSaved = false; render(); });
+    ['randomizer', 'leaderboard', 'log', 'instructions', 'settings', 'admin'].forEach(function (view) {
+      var btn = document.getElementById('nav-' + view);
+      if (btn) btn.addEventListener('click', function () {
+        state.view = view;
+        if (view === 'settings') state.settingsSaved = false;
+        render();
+      });
+    });
 
     var rollBtn = document.getElementById('btn-roll');
     if (rollBtn) rollBtn.addEventListener('click', handleRoll);
@@ -890,14 +918,26 @@
     if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', handleSaveSettings);
 
     var groupInput = document.getElementById('in-group-name');
-    if (groupInput) groupInput.addEventListener('input', function (e) { state.groupInput = e.target.value; state.groupSaved = false; });
-    var saveGroupBtn = document.getElementById('btn-save-group');
-    if (saveGroupBtn) saveGroupBtn.addEventListener('click', handleSaveGroup);
+    if (groupInput) groupInput.addEventListener('input', function (e) { state.groupInput = e.target.value; state.settingsSaved = false; });
 
     var closeBehaviorSel = document.getElementById('in-close-behavior');
     if (closeBehaviorSel) closeBehaviorSel.addEventListener('change', async function (e) {
       state.closeBehavior = e.target.value;
       await window.eqlApp.saveSettings({ closeBehavior: state.closeBehavior });
+      render();
+    });
+
+    var notificationsEnabledCheckbox = document.getElementById('in-notifications-enabled');
+    if (notificationsEnabledCheckbox) notificationsEnabledCheckbox.addEventListener('change', async function (e) {
+      state.notificationsEnabled = e.target.checked;
+      await window.eqlApp.saveSettings({ notificationsEnabled: state.notificationsEnabled });
+      render();
+    });
+
+    var soundsEnabledCheckbox = document.getElementById('in-sounds-enabled');
+    if (soundsEnabledCheckbox) soundsEnabledCheckbox.addEventListener('change', async function (e) {
+      state.soundsEnabled = e.target.checked;
+      await window.eqlApp.saveSettings({ soundsEnabled: state.soundsEnabled });
       render();
     });
 
@@ -1170,35 +1210,35 @@
   }
 
   async function handleSaveSettings() {
+    var groupChanged = state.groupInput !== state.groupName;
+    if (groupChanged && state.locked) {
+      alert('You can\'t change your group while you have an active character. Resolve it first (die, ding, or Roll Again), then change your group — otherwise your character\'s death/ding could end up recorded in the wrong group\'s log.');
+      return;
+    }
+
     await window.eqlApp.saveSettings({
       logFilePath: state.settingsLogFilePath,
       characterName: state.settingsCharacterName
     });
+
+    if (groupChanged) {
+      var res = await apiRequest('/api/group', { method: 'POST', body: { group: state.groupInput } });
+      if (!res.ok) {
+        alert((res.data && res.data.error) || 'Could not save that group name.');
+        return;
+      }
+      state.groupName = res.data.group;
+      state.groupInput = res.data.group;
+      // The group's shared data is a completely different dataset now —
+      // reset main's tracking baseline and pull the new group's leaderboard/log.
+      window.eqlApp.notifyGroupChanged();
+      await refreshSharedData();
+    }
+
     state.settingsSaved = true;
     var status = await window.eqlApp.getWatchStatus();
     state.watching = status.watching;
     state.currentDetectedLevel = status.currentLevel || null;
-    render();
-  }
-
-  async function handleSaveGroup() {
-    if (state.locked) {
-      alert('You can\'t change your group while you have an active character. Resolve it first (die, ding, or Roll Again), then change your group — otherwise your character\'s death/ding could end up recorded in the wrong group\'s log.');
-      return;
-    }
-    var res = await apiRequest('/api/group', { method: 'POST', body: { group: state.groupInput } });
-    if (!res.ok) {
-      alert((res.data && res.data.error) || 'Could not save that group name.');
-      return;
-    }
-    state.groupName = res.data.group;
-    state.groupInput = res.data.group;
-    state.groupSaved = true;
-    render();
-    // The group's shared data is a completely different dataset now —
-    // reset main's tracking baseline and pull the new group's leaderboard/log.
-    window.eqlApp.notifyGroupChanged();
-    await refreshSharedData();
     render();
   }
 
@@ -1275,6 +1315,8 @@
     state.token = settings.token || null;
     state.username = settings.username || '';
     state.closeBehavior = settings.closeBehavior || 'tray';
+    state.soundsEnabled = settings.soundsEnabled !== false;
+    state.notificationsEnabled = settings.notificationsEnabled !== false;
 
     state.appVersion = await window.eqlApp.getAppVersion();
     state.updateStatus = await window.eqlApp.getUpdateStatus();
