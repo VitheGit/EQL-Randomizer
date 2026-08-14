@@ -38,6 +38,7 @@ export async function onRequestPost(context) {
   // the filename don't produce something invalid; unrecognized values are
   // just dropped rather than trusted as-is.
   const server = SERVERS.filter(function (s) { return body.server && s.toLowerCase() === String(body.server).toLowerCase(); })[0] || null;
+  const d4 = !!body.d4;
   let character;
 
   if (manualBuild) {
@@ -73,6 +74,7 @@ export async function onRequestPost(context) {
       manualBuild: true,
       ssf: ssf,
       server: server,
+      d4: d4,
       locked: true
     };
   } else {
@@ -90,6 +92,7 @@ export async function onRequestPost(context) {
       manualBuild: false,
       ssf: ssf,
       server: server,
+      d4: d4,
       locked: true
     };
   }
@@ -112,7 +115,8 @@ export async function onRequestPost(context) {
     path: character.path,
     manualBuild: character.manualBuild,
     ssf: character.ssf,
-    server: character.server
+    server: character.server,
+    d4: character.d4
   };
   log.push(entry);
   await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));

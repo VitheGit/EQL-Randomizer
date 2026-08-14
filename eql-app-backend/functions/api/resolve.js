@@ -62,7 +62,8 @@ export async function onRequestPost(context) {
     manual: !!body.manual,
     manualBuild: !!character.manualBuild,
     ssf: !!character.ssf,
-    server: character.server || null
+    server: character.server || null,
+    d4: !!character.d4
   };
   if (type === 'died') {
     entry.level = level;

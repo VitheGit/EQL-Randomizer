@@ -29,6 +29,7 @@
 
     log: [], leaderboard: [], leaderboardResetAt: null,
     lbTab: 'randomized', // 'randomized' | 'manual'
+    lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false,
     logTab: 'randomized', // 'randomized' | 'manual'
 
     settingsLogFilePath: '', settingsCharacterName: '',
@@ -641,14 +642,48 @@
     var html = '<div class="card"><h3 class="page-title">Leaderboard</h3>' +
       '<p class="hint" style="margin:-6px 0 14px;">Showing: ' + (state.groupName ? escapeHtml(state.groupName) : 'Local') + '</p>';
     var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
+
+    var filtersActive = !!(state.lbFilterClass || state.lbFilterStatus || state.lbFilterSSF || state.lbFilterPath);
+    if (state.lbFilterClass) {
+      visibleLb = visibleLb.filter(function (row) { return row.primary === state.lbFilterClass; });
+    }
+    if (state.lbFilterStatus) {
+      visibleLb = visibleLb.filter(function (row) { return row.status === state.lbFilterStatus; });
+    }
+    if (state.lbFilterSSF) {
+      visibleLb = visibleLb.filter(function (row) { return !!row.ssf; });
+    }
+    if (state.lbFilterPath) {
+      visibleLb = visibleLb.filter(function (row) { return !!row.pathMode; });
+    }
+
     html +=
       '<div class="auth-tabs" style="margin-bottom:10px;">' +
         '<button class="auth-tab' + (state.lbTab === 'randomized' ? ' active' : '') + '" id="tab-lb-randomized" type="button">Randomized</button>' +
         '<button class="auth-tab' + (state.lbTab === 'manual' ? ' active' : '') + '" id="tab-lb-manual" type="button">Manual</button>' +
       '</div>' +
+      '<div class="lb-filters">' +
+        '<div class="field" style="margin-bottom:0;">' +
+          '<label class="field-label">Primary Class</label>' +
+          '<select id="in-lb-filter-class">' +
+            '<option value=""' + (!state.lbFilterClass ? ' selected' : '') + '>Any</option>' +
+            CLASSES.map(function (c) { return '<option value="' + escapeHtml(c) + '"' + (state.lbFilterClass === c ? ' selected' : '') + '>' + escapeHtml(c) + '</option>'; }).join('') +
+          '</select>' +
+        '</div>' +
+        '<div class="field" style="margin-bottom:0;">' +
+          '<label class="field-label">Status</label>' +
+          '<select id="in-lb-filter-status">' +
+            '<option value=""' + (!state.lbFilterStatus ? ' selected' : '') + '>Any</option>' +
+            '<option value="alive"' + (state.lbFilterStatus === 'alive' ? ' selected' : '') + '>Alive</option>' +
+            '<option value="dead"' + (state.lbFilterStatus === 'dead' ? ' selected' : '') + '>Dead</option>' +
+          '</select>' +
+        '</div>' +
+        '<label class="toggle lb-filter-toggle"><input type="checkbox" id="in-lb-filter-ssf"' + (state.lbFilterSSF ? ' checked' : '') + ' /> SSF Only</label>' +
+        '<label class="toggle lb-filter-toggle"><input type="checkbox" id="in-lb-filter-path"' + (state.lbFilterPath ? ' checked' : '') + ' /> Leveling Path Only</label>' +
+      '</div>' +
       '<div class="list-scroll">' +
       (visibleLb.length === 0
-        ? '<p class="empty-text">No completed ' + (state.lbTab === 'manual' ? 'manually-built' : 'randomized') + ' Hardcore runs yet.</p>'
+        ? '<p class="empty-text">' + (filtersActive ? 'No entries match your filters.' : 'No completed ' + (state.lbTab === 'manual' ? 'manually-built' : 'randomized') + ' Hardcore runs yet.') + '</p>'
         : visibleLb.map(function (row, i) { return renderLbRow(row, i + 1); }).join('')) +
       '</div></div>';
     return html;
@@ -916,6 +951,16 @@
     if (lbTabRandomized) lbTabRandomized.addEventListener('click', function () { state.lbTab = 'randomized'; render(); });
     var lbTabManual = document.getElementById('tab-lb-manual');
     if (lbTabManual) lbTabManual.addEventListener('click', function () { state.lbTab = 'manual'; render(); });
+
+    var lbFilterClassSel = document.getElementById('in-lb-filter-class');
+    if (lbFilterClassSel) lbFilterClassSel.addEventListener('change', function (e) { state.lbFilterClass = e.target.value; render(); });
+    var lbFilterStatusSel = document.getElementById('in-lb-filter-status');
+    if (lbFilterStatusSel) lbFilterStatusSel.addEventListener('change', function (e) { state.lbFilterStatus = e.target.value; render(); });
+    var lbFilterSSFCheckbox = document.getElementById('in-lb-filter-ssf');
+    if (lbFilterSSFCheckbox) lbFilterSSFCheckbox.addEventListener('change', function (e) { state.lbFilterSSF = e.target.checked; render(); });
+    var lbFilterPathCheckbox = document.getElementById('in-lb-filter-path');
+    if (lbFilterPathCheckbox) lbFilterPathCheckbox.addEventListener('change', function (e) { state.lbFilterPath = e.target.checked; render(); });
+
     var logTabRandomized = document.getElementById('tab-log-randomized');
     if (logTabRandomized) logTabRandomized.addEventListener('click', function () { state.logTab = 'randomized'; render(); });
     var logTabManual = document.getElementById('tab-log-manual');
@@ -1261,6 +1306,16 @@
       characterName: state.settingsCharacterName,
       serverName: state.serverName
     });
+
+    if (state.locked && state.serverName) {
+      // Covers a real flow: die/ding, roll a new character (its log file
+      // doesn't exist yet), then point Settings at the new log file once
+      // it appears — meaning the roll itself already recorded whatever
+      // server was set at that earlier moment. This corrects the
+      // character record so future events (level-ups, the eventual
+      // death/ding) show the right server going forward.
+      await apiRequest('/api/character-server', { method: 'POST', body: { server: state.serverName } });
+    }
 
     if (groupChanged) {
       var res = await apiRequest('/api/group', { method: 'POST', body: { group: state.groupInput } });

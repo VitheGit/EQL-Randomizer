@@ -49,7 +49,8 @@ export async function onRequestPost(context) {
     pathMode: !!character.pathMode,
     manualBuild: !!character.manualBuild,
     ssf: !!character.ssf,
-    server: character.server || null
+    server: character.server || null,
+    d4: !!character.d4
   };
 
   if (type === 'levelup') {
