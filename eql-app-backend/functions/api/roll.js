@@ -1,6 +1,6 @@
 import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser, saveUser } from '../_lib/auth-users.js';
-import { drawCharacter, generateLevelingPath, RACES, CLASSES, isEligible } from '../_lib/gamedata.js';
+import { drawCharacter, generateLevelingPath, RACES, CLASSES, SERVERS, isEligible } from '../_lib/gamedata.js';
 import { logKeyFor } from '../_lib/groups.js';
 import { broadcastEntry } from '../_lib/broadcast.js';
 
@@ -33,6 +33,11 @@ export async function onRequestPost(context) {
   const manualBuild = !!body.manualBuild;
   const pathMode = !!body.pathMode;
   const ssf = !!body.ssf;
+  // Comes from the client's log filename (eqlog_Character_Server.txt) —
+  // matched case-insensitively against the known list so casing quirks in
+  // the filename don't produce something invalid; unrecognized values are
+  // just dropped rather than trusted as-is.
+  const server = SERVERS.filter(function (s) { return body.server && s.toLowerCase() === String(body.server).toLowerCase(); })[0] || null;
   let character;
 
   if (manualBuild) {
@@ -67,6 +72,7 @@ export async function onRequestPost(context) {
       path: pathMode ? generateLevelingPath() : null,
       manualBuild: true,
       ssf: ssf,
+      server: server,
       locked: true
     };
   } else {
@@ -83,6 +89,7 @@ export async function onRequestPost(context) {
       path: pathMode ? generateLevelingPath() : null,
       manualBuild: false,
       ssf: ssf,
+      server: server,
       locked: true
     };
   }
@@ -104,7 +111,8 @@ export async function onRequestPost(context) {
     pathMode: character.pathMode,
     path: character.path,
     manualBuild: character.manualBuild,
-    ssf: character.ssf
+    ssf: character.ssf,
+    server: character.server
   };
   log.push(entry);
   await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));

@@ -14,6 +14,10 @@ export const CLASSES = [
   "Druid", "Shaman", "Berserker", "Monk", "Rogue", "Warrior"
 ];
 
+export const SERVERS = [
+  "Qeynos", "Freeport", "Oggok", "Neriak", "Rivervale", "Halas", "Paineel"
+];
+
 export const ELIGIBILITY = {
   "Beastlord": ["Barbarian","Iksar","Kerran","Ogre","Troll"],
   "Berserker": ["Barbarian","Dwarf","Kerran","Ogre","Troll"],

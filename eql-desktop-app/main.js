@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, screen, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, screen, shell, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const WebSocket = require('ws');
@@ -49,6 +49,24 @@ let updateState = { status: 'idle', version: null, progress: 0, errorMessage: nu
 
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
+// Temporary diagnostic logging for the realtime WebSocket ping/pong
+// investigation — writes to a plain file so it's visible regardless of
+// whether the app was launched from a terminal or just double-clicked.
+const REALTIME_DEBUG_LOG_PATH = path.join(app.getPath('userData'), 'realtime-debug.log');
+const REALTIME_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024; // 5MB safety cap
+function realtimeDebugLog(line) {
+  try {
+    var stats = fs.existsSync(REALTIME_DEBUG_LOG_PATH) ? fs.statSync(REALTIME_DEBUG_LOG_PATH) : null;
+    if (stats && stats.size > REALTIME_DEBUG_LOG_MAX_BYTES) {
+      // Roll over rather than growing forever if this ends up running
+      // for longer than expected — keep just a marker of the reset so
+      // it's obvious in the file itself what happened.
+      fs.writeFileSync(REALTIME_DEBUG_LOG_PATH, '[' + new Date().toISOString() + '] --- log rolled over (exceeded 5MB) ---\n');
+    }
+    fs.appendFileSync(REALTIME_DEBUG_LOG_PATH, '[' + new Date().toISOString() + '] ' + line + '\n');
+  } catch (e) { /* best-effort only */ }
+}
+
 // So a fresh install works immediately without anyone needing to know or
 // type the backend URL. Only applied when nothing's been saved yet — an
 // existing settings.json always wins, so this never overrides a value the
@@ -80,6 +98,9 @@ function loadSettings() {
   }
   if (typeof settings.notificationsEnabled !== 'boolean') {
     settings.notificationsEnabled = true;
+  }
+  if (typeof settings.notificationVolume !== 'number') {
+    settings.notificationVolume = 1.0; // 100% — a multiplier on top of each sound's own tuned base volume
   }
   return settings;
 }
@@ -153,8 +174,9 @@ function notify(title, body, kind) {
     if (!settings.notificationsEnabled) return; // master switch — nothing shows at all, not even silently
     const win = getNotifyWindow();
     const soundsEnabled = settings.soundsEnabled;
+    const notificationVolume = settings.notificationVolume;
     const send = function () {
-      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled });
+      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume });
       if (!win.isVisible()) win.showInactive();
     };
     if (win.webContents.isLoading()) {
@@ -477,6 +499,7 @@ function connectRealtime() {
     return;
   }
   clearTimeout(realtimeReconnectTimer);
+  realtimeDebugLog('CONNECT ATTEMPT — url=' + wsUrlFor(s.realtimeUrl));
 
   var ws;
   try {
@@ -491,19 +514,46 @@ function connectRealtime() {
   realtimeIntentionalClose = false;
 
   ws.on('open', function () {
+    realtimeDebugLog('OPEN — connection established');
     realtimeReconnectDelay = 2000; // reset backoff on a successful connection
     // Reconnecting (or connecting for the first time) might mean we
     // missed something — do one immediate check to catch up.
     pollSharedLog();
   });
 
-  ws.on('message', function () {
-    // Payload content doesn't matter here — any message means "something
-    // changed," and the existing poll fetches the real, current data.
-    pollSharedLog();
+  ws.on('message', function (data) {
+    var rawType = Buffer.isBuffer(data) ? 'Buffer' : typeof data;
+    var rawText;
+    try { rawText = data.toString('utf8'); } catch (e) { rawText = '(could not convert to string: ' + e.message + ')'; }
+    realtimeDebugLog('MESSAGE received — raw type=' + rawType + ' content=' + rawText);
+
+    var msg = null;
+    try { msg = JSON.parse(rawText); } catch (e) {
+      realtimeDebugLog('MESSAGE — JSON.parse failed: ' + e.message);
+    }
+
+    if (msg && msg.type === 'ping') {
+      realtimeDebugLog('MESSAGE — recognized as ping, attempting to send pong');
+      // Server-side heartbeat check — answer it so this connection isn't
+      // mistaken for dead and pruned, but this isn't new data, so don't
+      // trigger a poll for it.
+      try {
+        ws.send(JSON.stringify({ type: 'pong' }));
+        realtimeDebugLog('MESSAGE — pong sent successfully. readyState=' + ws.readyState);
+      } catch (e) {
+        realtimeDebugLog('MESSAGE — pong send THREW: ' + e.message);
+      }
+      return;
+    }
+
+    realtimeDebugLog('MESSAGE — not a ping (parsed type=' + (msg && msg.type) + '), triggering poll');
+    // Anything else means "something changed" — the existing poll
+    // fetches the real, current data regardless of this message's content.
+    pollWithConsistencyRetries();
   });
 
-  ws.on('close', function () {
+  ws.on('close', function (code, reason) {
+    realtimeDebugLog('CLOSE — code=' + code + ' reason=' + (reason ? reason.toString() : '(none)'));
     if (realtimeSocket === ws) realtimeSocket = null;
     if (!realtimeIntentionalClose) scheduleRealtimeReconnect();
   });
@@ -539,25 +589,89 @@ function reconnectRealtimeNow() {
   connectRealtime();
 }
 
+// System sleep is a real gap in the passive "wait for the heartbeat to
+// notice" recovery path: when Windows sleeps, the network dies with no
+// close/error event at all — the socket object just sits there still
+// believing it's open, since nothing ever told it otherwise. Left alone,
+// recovery would depend entirely on the next heartbeat cycle noticing
+// once the machine wakes back up, which could take a couple of minutes
+// rather than being immediate. This handles it directly instead of
+// hoping the passive path catches it quickly enough.
+function setupPowerMonitorHandling() {
+  powerMonitor.on('suspend', function () {
+    realtimeDebugLog('POWER — system suspending, disconnecting cleanly');
+    disconnectRealtime();
+  });
+  powerMonitor.on('resume', function () {
+    realtimeDebugLog('POWER — system resumed, reconnecting immediately');
+    connectRealtime();
+  });
+}
+
 async function pollSharedLog() {
-  if (pollInFlight) return; // a previous poll hasn't finished yet — skip this tick rather than risk double-processing the same entries
+  if (pollInFlight) return null; // a previous poll hasn't finished yet — skip this tick rather than risk double-processing the same entries
   pollInFlight = true;
   try {
-    await pollSharedLogInner();
+    return await pollSharedLogInner();
   } finally {
     pollInFlight = false;
   }
 }
 
+// A WebSocket message means something changed in KV *just* now — but KV
+// itself is eventually consistent, and the specific edge location that
+// happens to serve a given read can occasionally lag behind. Cloudflare's
+// own documentation puts the worst case at up to 60 seconds. Without
+// this, a poll that lands during that gap comes back clean (200 OK,
+// nothing thrown) but with genuinely stale data, finds nothing new, and
+// nothing re-checks again until some later, unrelated event happens to
+// trigger another poll — which could be minutes away. These retries,
+// spaced out and covering that full documented window, close the gap
+// without polling aggressively all the time.
+var CONSISTENCY_RETRY_DELAYS_MS = [3000, 6000, 12000, 20000, 20000]; // cumulative: ~61s, matching KV's documented worst case
+
+function pollWithConsistencyRetries() {
+  attemptWithRetries(0);
+
+  function attemptWithRetries(retryIndex) {
+    pollSharedLog().then(function (foundSomething) {
+      if (foundSomething !== false) return; // true = found it, null = skipped/errored — neither needs a consistency retry
+      if (retryIndex >= CONSISTENCY_RETRY_DELAYS_MS.length) {
+        realtimeDebugLog('POLL — gave up after ' + retryIndex + ' consistency retries (~60s); waiting for the next natural trigger');
+        return;
+      }
+      var delay = CONSISTENCY_RETRY_DELAYS_MS[retryIndex];
+      realtimeDebugLog('POLL — came back clean but found nothing new yet; retry ' + (retryIndex + 1) + '/' + CONSISTENCY_RETRY_DELAYS_MS.length + ' in ' + delay + 'ms');
+      setTimeout(function () { attemptWithRetries(retryIndex + 1); }, delay);
+    });
+  }
+}
+
 async function pollSharedLogInner() {
   const s = loadSettings();
-  if (!s.apiBaseUrl || !s.token) return;
+  if (!s.apiBaseUrl || !s.token) return null;
+  realtimeDebugLog('POLL — starting fetch of shared log');
   try {
-    const res = await fetch(s.apiBaseUrl.replace(/\/$/, '') + '/api/kv?key=log', {
-      headers: { 'Authorization': 'Bearer ' + s.token }
-    });
+    // An explicit timeout matters here specifically: without one, a
+    // request that hangs (rather than cleanly failing) would leave
+    // pollInFlight stuck true indefinitely, silently blocking every
+    // future poll — including the one a realtime WebSocket message just
+    // triggered — until some much longer, unrelated default timeout
+    // eventually gives up on its own.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(function () { controller.abort(); }, 15000);
+    let res;
+    try {
+      res = await fetch(s.apiBaseUrl.replace(/\/$/, '') + '/api/kv?key=log', {
+        headers: { 'Authorization': 'Bearer ' + s.token },
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    realtimeDebugLog('POLL — fetch completed, status=' + res.status);
     const data = await res.json().catch(function () { return null; });
-    if (!data || typeof data.value !== 'string') return;
+    if (!data || typeof data.value !== 'string') return null;
     const log = JSON.parse(data.value);
 
     if (lastSeenLogLength === null) {
@@ -565,7 +679,7 @@ async function pollSharedLogInner() {
       // entire pre-existing history, just start tracking from here.
       lastSeenLogLength = log.length;
       sendToRenderer('log-updated', log);
-      return;
+      return null;
     }
 
     if (log.length > lastSeenLogLength) {
@@ -583,16 +697,22 @@ async function pollSharedLogInner() {
         }
       });
       sendToRenderer('log-updated', log);
+      // Only ever move forward. Cloudflare KV has eventual consistency —
+      // a read can occasionally come back momentarily stale/shorter than a
+      // previous read while writes are still propagating. If we let that
+      // pull the baseline backward, a later poll that sees the real
+      // (longer) log again would re-detect already-notified entries as
+      // "new" and fire duplicate notifications for them.
+      lastSeenLogLength = Math.max(lastSeenLogLength, log.length);
+      return true; // found something new
     }
-    // Only ever move forward. Cloudflare KV has eventual consistency —
-    // a read can occasionally come back momentarily stale/shorter than a
-    // previous read while writes are still propagating. If we let that
-    // pull the baseline backward, a later poll that sees the real
-    // (longer) log again would re-detect already-notified entries as
-    // "new" and fire duplicate notifications for them.
     lastSeenLogLength = Math.max(lastSeenLogLength, log.length);
+    return false; // checked successfully, nothing new (yet — may still be propagating)
   } catch (e) {
-    // Transient network errors are expected occasionally; ignore quietly.
+    // Transient network errors are expected occasionally; ignore quietly,
+    // but log it so this is diagnosable if it keeps happening.
+    realtimeDebugLog('POLL — failed/timed out: ' + (e && e.message));
+    return null;
   }
 }
 
@@ -779,6 +899,19 @@ app.whenReady().then(function () {
   pollSharedLog();
   setInterval(pollSharedLog, 5 * 60 * 1000); // rare safety net now — the WebSocket is the real delivery mechanism
   connectRealtime();
+  setupPowerMonitorHandling();
+
+  // Defensive safety net while the actual root cause of long-idle-period
+  // degradation is still being tracked down: force a completely fresh
+  // reconnect periodically regardless of the current connection's
+  // apparent health. This doesn't fix whatever the underlying issue
+  // turns out to be, but it bounds the worst case — instead of a
+  // connection potentially degrading for hours before anything notices,
+  // it can never go stale for longer than this interval.
+  setInterval(function () {
+    realtimeDebugLog('PERIODIC — forcing a fresh reconnect as a safety net');
+    reconnectRealtimeNow();
+  }, 30 * 60 * 1000); // every 30 minutes
 
   // Check for updates a few seconds after launch (not instantly, so it
   // doesn't compete with initial window/login rendering), then periodically
@@ -788,7 +921,7 @@ app.whenReady().then(function () {
   }, 8000);
   setInterval(function () {
     autoUpdater.checkForUpdates().catch(function () { /* silent on periodic check */ });
-  }, 4 * 60 * 60 * 1000); // every 4 hours
+  }, 60 * 60 * 1000); // every 1 hour
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -36,6 +36,7 @@
     closeBehavior: 'tray', // 'tray' | 'quit'
     soundsEnabled: true,
     notificationsEnabled: true,
+    notificationVolume: 1.0,
     groupName: '', groupInput: '',
     appVersion: '',
     updateStatus: { status: 'idle', version: null, progress: 0, errorMessage: null },
@@ -203,7 +204,7 @@
           level: 1, // no levelup entry yet — assume level 1 until we see one
           race: e.race, primary: e.primary, secondary: e.secondary, tertiary: e.tertiary,
           hardcore: !!e.hardcore, pathMode: !!e.pathMode, manualBuild: !!e.manualBuild, ssf: !!e.ssf,
-          path: e.path || null,
+          path: e.path || null, server: e.server || null,
           rollTime: e.time
         };
       } else if (e.type === 'levelup') {
@@ -216,7 +217,7 @@
           race: e.race, primary: e.primary, secondary: e.secondary, tertiary: e.tertiary,
           hardcore: !!e.hardcore, pathMode: !!e.pathMode,
           killedBy: e.killedBy || null, manual: !!e.manual, manualBuild: !!e.manualBuild,
-          ssf: !!e.ssf, path: e.path || null
+          ssf: !!e.ssf, path: e.path || null, server: e.server || null
         });
         byName[n].lastRollTime = null;
         byName[n].current = null; // resolved — no longer in progress
@@ -241,7 +242,7 @@
           name: name, level: run.level, duration: run.duration, race: run.race,
           primary: run.primary, secondary: run.secondary, tertiary: run.tertiary,
           type: run.type, pathMode: run.pathMode, killedBy: run.killedBy, manual: run.manual,
-          manualBuild: run.manualBuild, ssf: run.ssf, path: run.path,
+          manualBuild: run.manualBuild, ssf: run.ssf, path: run.path, server: run.server,
           status: run.type === 'died' ? 'dead' : 'alive'
         });
       });
@@ -254,7 +255,7 @@
           name: name, level: current.level, duration: elapsed, race: current.race,
           primary: current.primary, secondary: current.secondary, tertiary: current.tertiary,
           type: 'inprogress', pathMode: current.pathMode, killedBy: null, manual: false,
-          manualBuild: current.manualBuild, ssf: current.ssf, path: current.path,
+          manualBuild: current.manualBuild, ssf: current.ssf, path: current.path, server: current.server,
           status: 'alive'
         });
       }
@@ -316,7 +317,8 @@
 
   function renderLogRow(entry) {
     var stamp = formatStamp(new Date(entry.time));
-    var who = escapeHtml(entry.name || 'Unknown') + (entry.ssf ? ' <span class="ssf-tag">SSF</span>' : '');
+    var serverTag = entry.server ? ' <span style="opacity:0.7;">[' + escapeHtml(entry.server) + ']</span>' : '';
+    var who = escapeHtml(entry.name || 'Unknown') + serverTag + (entry.ssf ? ' <span class="ssf-tag">SSF</span>' : '');
     var pathTag = entry.pathMode ? ' <span class="eql-path-icon" title="' + escapeHtml(formatPathTooltip(entry.path)) + '">' + PATH_ICON_SVG + '</span>' : '';
     var manualTag = entry.manual ? ' <span style="font-size:10px;font-style:italic;opacity:0.65">(manual)</span>' : '';
     var killedByTag = (entry.type === 'died' && entry.killedBy) ? ' <span class="killed-by">— killed by ' + escapeHtml(entry.killedBy) + '</span>' : '';
@@ -354,6 +356,7 @@
       ? ' <span class="status-tag status-dead">DEAD</span>'
       : ' <span class="status-tag status-alive">ALIVE</span>';
     var killedByTag = (row.type === 'died' && row.killedBy) ? ' <span class="killed-by">· killed by ' + escapeHtml(row.killedBy) + '</span>' : '';
+    var serverTag = row.server ? ' <span style="opacity:0.7;">[' + escapeHtml(row.server) + ']</span>' : '';
     var classes = (row.secondary && row.tertiary)
       ? (abbrClass(row.primary) + ' / ' + abbrClass(row.secondary) + ' / ' + abbrClass(row.tertiary))
       : abbrClass(row.primary);
@@ -363,7 +366,7 @@
         '<span class="lb-rank">#' + rank + '</span>' +
         '<div class="lb-main">' +
           '<div class="lb-line1">' +
-            '<span class="lb-name">' + escapeHtml(row.name) + ' <span style="font-weight:400;font-style:italic;color:var(--ink-soft)">(' + escapeHtml(row.race) + ')</span>' + ssfTag + statusTag + (medal ? ' ' + medal : '') + '</span>' +
+            '<span class="lb-name">' + escapeHtml(row.name) + ' <span style="font-weight:400;font-style:italic;color:var(--ink-soft)">(' + escapeHtml(row.race) + ')</span>' + serverTag + ssfTag + statusTag + (medal ? ' ' + medal : '') + '</span>' +
             '<span class="' + levelClass + '">' + icon + pathIcon + 'Lvl ' + row.level + manualTag + '</span>' +
           '</div>' +
           '<div class="lb-build">' + escapeHtml(classes) + ' · ' + formatDuration(row.duration) + killedByTag + '</div>' +
@@ -428,8 +431,13 @@
 
   function renderAppScreen() {
     var html = '';
+    var updateStatus = (state.updateStatus && state.updateStatus.status) || 'idle';
+    var updateBanner = (updateStatus === 'available' || updateStatus === 'downloaded')
+      ? '<p class="update-banner">*Update Available!*<br>Please go to the SETTINGS tab and update!</p>'
+      : '';
     html += '<div class="header">' +
       '<img src="../build/icon.png" alt="EQ Legends Randomizer" />' +
+      updateBanner +
       '<p class="subtitle">Character Randomizer</p>' +
     '</div>';
 
@@ -741,10 +749,9 @@
           '<label class="field-label">Group Name</label>' +
           '<input type="text" id="in-group-name" value="' + escapeHtml(state.groupInput) + '" placeholder="Leave blank for local only"' + (state.locked ? ' disabled' : '') + ' />' +
         '</div>' +
-        '<p class="hint">Type any name you\'d like — anyone who enters the exact same Group Name (not case-sensitive) will share leaderboards, Adventure Log entries, and notifications with you. Leave this blank and everything stays local to just you — nobody else will see your leaderboard, log, or notifications, and you won\'t see anyone else\'s.</p>' +
         (state.locked
-          ? '<p class="note warn" style="text-align:left;margin:0 0 10px;">You have an active character right now — resolve it first before changing your group, so its outcome doesn\'t get split across two different groups\' logs.</p>'
-          : '') +
+          ? '<p class="hint" style="color:var(--ember);">You have an active character right now — resolve it first (die, ding, or Roll Again) before changing your group, so its outcome doesn\'t get split across two different groups\' logs.</p>'
+          : '<p class="hint">Type any name you\'d like — anyone who enters the exact same Group Name (not case-sensitive) will share leaderboards, Adventure Log entries, and notifications with you. Leave this blank and everything stays local to just you — nobody else will see your leaderboard, log, or notifications, and you won\'t see anyone else\'s.</p>') +
         '<button class="btn btn-primary btn-full" id="btn-save-settings" style="margin-top:10px;">' + (state.settingsSaved ? 'Saved ✓' : 'Save Settings') + '</button>' +
         '<div style="text-align:center;margin-top:12px;">' +
           (state.watching
@@ -771,6 +778,10 @@
         '<p class="hint">Turn off to disable all death/ding/level-up notifications entirely — nothing will show, for you or about anyone else in your group.</p>' +
         '<label class="toggle" style="margin-top:6px;"><input type="checkbox" id="in-sounds-enabled"' + (state.soundsEnabled ? ' checked' : '') + (state.notificationsEnabled ? '' : ' disabled') + ' /> Notification Sounds</label>' +
         '<p class="hint">Turn off to keep the visual toasts but silence the death/ding/level-up sound effects.' + (state.notificationsEnabled ? '' : ' (Notifications are off, so this has no effect right now.)') + '</p>' +
+        '<div class="field" style="margin-top:6px;">' +
+          '<label class="field-label">Notification Volume — <span id="volume-pct-label">' + Math.round(state.notificationVolume * 100) + '%</span></label>' +
+          '<input type="range" id="in-notification-volume" min="0" max="100" value="' + Math.round(state.notificationVolume * 100) + '"' + ((state.notificationsEnabled && state.soundsEnabled) ? '' : ' disabled') + ' style="width:100%;" />' +
+        '</div>' +
       '</div>'
     );
   }
@@ -941,6 +952,20 @@
       render();
     });
 
+    var volumeSlider = document.getElementById('in-notification-volume');
+    if (volumeSlider) {
+      var volumeLabel = document.getElementById('volume-pct-label');
+      volumeSlider.addEventListener('input', function (e) {
+        // Live label update while dragging — no save yet, avoids writing
+        // to disk on every pixel of drag movement.
+        if (volumeLabel) volumeLabel.textContent = e.target.value + '%';
+      });
+      volumeSlider.addEventListener('change', async function (e) {
+        state.notificationVolume = Number(e.target.value) / 100;
+        await window.eqlApp.saveSettings({ notificationVolume: state.notificationVolume });
+      });
+    }
+
     var checkUpdateBtn = document.getElementById('btn-check-update');
     if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', function () {
       if (Date.now() < state.updateCheckCooldownUntil) return; // guard against any stray double-click
@@ -1024,6 +1049,7 @@
     });
     state.settingsLogFilePath = settings.logFilePath || '';
     state.settingsCharacterName = settings.characterName || guessCharacterName(settings.logFilePath);
+    state.serverName = settings.serverName || guessServerName(settings.logFilePath);
 
     await refreshSharedData();
     render();
@@ -1044,11 +1070,23 @@
     render();
   }
 
+  var VALID_SERVERS = ['Qeynos', 'Freeport', 'Oggok', 'Neriak', 'Rivervale', 'Halas', 'Paineel'];
+
   function guessCharacterName(logPath) {
     if (!logPath) return '';
     var base = logPath.split(/[\\/]/).pop() || '';
     var match = base.match(/^eqlog_([^_]+)_/i);
     return match ? match[1] : '';
+  }
+
+  function guessServerName(logPath) {
+    if (!logPath) return '';
+    var base = logPath.split(/[\\/]/).pop() || '';
+    var match = base.match(/^eqlog_[^_]+_([^_.]+)/i);
+    if (!match) return '';
+    var extracted = match[1];
+    var known = VALID_SERVERS.filter(function (s) { return s.toLowerCase() === extracted.toLowerCase(); })[0];
+    return known || ''; // unrecognized server name in the filename — leave blank rather than show something wrong
   }
 
   // ---- Character actions ----
@@ -1061,7 +1099,7 @@
   }
 
   async function finishRoll() {
-    var res = await apiRequest('/api/roll', { method: 'POST', body: { hardcore: !!state.hardcoreMode, pathMode: !!state.pathToggle, ssf: !!state.ssfToggle } });
+    var res = await apiRequest('/api/roll', { method: 'POST', body: { hardcore: !!state.hardcoreMode, pathMode: !!state.pathToggle, ssf: !!state.ssfToggle, server: state.serverName } });
     state.rolling = false;
     if (!res.ok) {
       alert((res.data && res.data.error) || 'Could not randomize right now.');
@@ -1091,7 +1129,8 @@
       race: state.manualRace,
       primary: state.manualPrimary,
       secondary: state.manualSecondary,
-      tertiary: state.manualTertiary
+      tertiary: state.manualTertiary,
+      server: state.serverName
     } });
     state.rolling = false;
     if (!res.ok) {
@@ -1205,6 +1244,7 @@
     if (!state.settingsCharacterName) {
       state.settingsCharacterName = guessCharacterName(filePath);
     }
+    state.serverName = guessServerName(filePath);
     state.settingsSaved = false;
     render();
   }
@@ -1218,7 +1258,8 @@
 
     await window.eqlApp.saveSettings({
       logFilePath: state.settingsLogFilePath,
-      characterName: state.settingsCharacterName
+      characterName: state.settingsCharacterName,
+      serverName: state.serverName
     });
 
     if (groupChanged) {
@@ -1312,11 +1353,13 @@
     state.authApiUrl = settings.apiBaseUrl || '';
     state.settingsLogFilePath = settings.logFilePath || '';
     state.settingsCharacterName = settings.characterName || '';
+    state.serverName = settings.serverName || guessServerName(settings.logFilePath);
     state.token = settings.token || null;
     state.username = settings.username || '';
     state.closeBehavior = settings.closeBehavior || 'tray';
     state.soundsEnabled = settings.soundsEnabled !== false;
     state.notificationsEnabled = settings.notificationsEnabled !== false;
+    state.notificationVolume = typeof settings.notificationVolume === 'number' ? settings.notificationVolume : 1.0;
 
     state.appVersion = await window.eqlApp.getAppVersion();
     state.updateStatus = await window.eqlApp.getUpdateStatus();

@@ -25,9 +25,14 @@
     SOUNDS[key].audio.volume = SOUNDS[key].volume;
   });
 
-  function playSoundFor(kind) {
+  function playSoundFor(kind, volumeMultiplier) {
     var s = SOUNDS[kind];
     if (!s) return;
+    var mult = typeof volumeMultiplier === 'number' ? volumeMultiplier : 1.0;
+    // The multiplier scales each sound's own tuned base volume rather
+    // than overriding it directly — this keeps e.g. the level-50 ding
+    // louder than the AA sparkle at every setting, not just at 100%.
+    s.audio.volume = Math.max(0, Math.min(1, s.volume * mult));
     // Rewind first so rapid-fire notifications of the same kind (e.g. a
     // group wipe, or a fast burst of AA gains) each play from the start
     // rather than getting silently dropped while one is still playing.
@@ -47,7 +52,7 @@
     var id = 'toast-' + (counter++);
     var icon = ICONS[payload.kind] || ICONS.info;
 
-    if (payload.soundsEnabled !== false) playSoundFor(payload.kind);
+    if (payload.soundsEnabled !== false) playSoundFor(payload.kind, payload.notificationVolume);
 
     var el = document.createElement('div');
     el.className = 'toast';

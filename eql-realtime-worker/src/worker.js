@@ -46,11 +46,18 @@ function json(body, status) {
   });
 }
 
+const HEARTBEAT_INTERVAL_MS = 30000; // check every 30s
+const STALE_THRESHOLD_MS = 65000; // ~2 missed heartbeats = treat as dead
+
 export class GroupRoom {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    this.sessions = [];
+    // Deliberately no in-memory session list here — under hibernation,
+    // this constructor can run again with a blank slate after the DO
+    // wakes back up, so state.getWebSockets() (which Cloudflare tracks
+    // correctly across hibernation) is the only reliable source of
+    // "who's currently connected," not anything this class remembers.
   }
 
   async fetch(request) {
@@ -62,42 +69,106 @@ export class GroupRoom {
       }
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      this.acceptSession(server);
+      // state.acceptWebSocket (not server.accept()) is what lets this
+      // Durable Object hibernate — go idle and get evicted from memory —
+      // WITHOUT dropping the connection. The older ws.accept() API pins
+      // the DO in memory for as long as the socket is open; once it's
+      // evicted anyway (which Cloudflare does for idle DOs regardless),
+      // the connection silently dies with it. That idle-eviction-then-
+      // drop is what was actually happening before this fix.
+      this.state.acceptWebSocket(server);
+      // Give it a fresh "last heard from" timestamp so it isn't
+      // immediately treated as stale before its first heartbeat cycle.
+      server.serializeAttachment({ lastPong: Date.now() });
+      console.log('[GroupRoom] connection accepted. Total sockets now:', this.state.getWebSockets().length);
+      await this.ensureHeartbeatScheduled();
       return new Response(null, { status: 101, webSocket: client });
     }
 
     if (url.pathname === '/broadcast' && request.method === 'POST') {
       const payload = await request.json();
+      const socketCount = this.state.getWebSockets().length;
+      console.log('[GroupRoom] broadcast received. Connected sockets in this room:', socketCount, '| entry type:', payload.entry && payload.entry.type);
       this.broadcast(JSON.stringify({ type: 'entry', entry: payload.entry }));
-      return json({ ok: true, delivered: this.sessions.length });
+      return json({ ok: true, delivered: socketCount });
     }
 
     return new Response('Not found', { status: 404 });
   }
 
-  acceptSession(ws) {
-    ws.accept();
-    this.sessions.push(ws);
+  async ensureHeartbeatScheduled() {
+    const current = await this.state.storage.getAlarm();
+    if (current === null) {
+      await this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
+    }
+  }
 
-    var self = this;
-    ws.addEventListener('close', function () {
-      self.sessions = self.sessions.filter(function (s) { return s !== ws; });
+  // The actual fix for stale connections: a server-initiated ping/pong.
+  // A dead connection (network drop, sleep/wake, ISP hiccup — anything
+  // that didn't send a clean close frame) can sit in getWebSockets()
+  // looking perfectly normal, and ws.send() on it often won't throw
+  // right away either. Without this, broadcasts silently "succeed"
+  // against a connection nobody's listening on anymore. This alarm
+  // periodically pings everyone, and anyone who hasn't answered within
+  // ~2 cycles gets forcibly closed so they drop out of future broadcasts
+  // (the client's own reconnect logic then gets them a fresh, live one).
+  async alarm() {
+    const sockets = this.state.getWebSockets();
+    const now = Date.now();
+    console.log('[GroupRoom] heartbeat check — sockets:', sockets.length);
+
+    sockets.forEach(function (ws) {
+      var lastPong = now;
+      try {
+        var attachment = ws.deserializeAttachment();
+        if (attachment && attachment.lastPong) lastPong = attachment.lastPong;
+      } catch (e) { /* no attachment yet — treat as fresh */ }
+
+      if (now - lastPong > STALE_THRESHOLD_MS) {
+        console.log('[GroupRoom] closing stale socket — no pong for', now - lastPong, 'ms');
+        try { ws.close(1000, 'stale connection'); } catch (e) { /* already gone */ }
+      } else {
+        try { ws.send(JSON.stringify({ type: 'ping' })); } catch (e) { /* will show as stale next cycle */ }
+      }
     });
-    ws.addEventListener('error', function () {
-      self.sessions = self.sessions.filter(function (s) { return s !== ws; });
-    });
-    // The client doesn't send anything meaningful, but some proxies/load
-    // balancers close idle connections — respond to pings if any arrive.
-    ws.addEventListener('message', function () { /* no-op */ });
+
+    // Keep the heartbeat going as long as this room exists — cheap to
+    // run, and correctly resumes even if the DO hibernates in between
+    // (the alarm itself is what wakes it back up).
+    await this.state.storage.setAlarm(now + HEARTBEAT_INTERVAL_MS);
+  }
+
+  // These are called directly by the Cloudflare runtime — including
+  // right after a hibernation wake-up, when this class has just been
+  // freshly re-constructed with no memory of prior state.
+  async webSocketMessage(ws, message) {
+    try {
+      const data = JSON.parse(message);
+      if (data && data.type === 'pong') {
+        ws.serializeAttachment({ lastPong: Date.now() });
+      }
+    } catch (e) {
+      // Not JSON, or not a pong — nothing to do.
+    }
+  }
+
+  async webSocketClose(ws, code, reason, wasClean) {
+    // No manual cleanup needed — a closed socket just stops appearing in
+    // future state.getWebSockets() calls on its own.
+  }
+
+  async webSocketError(ws, error) {
+    // Same as above — nothing to do here.
   }
 
   broadcast(message) {
-    this.sessions = this.sessions.filter(function (ws) {
+    const sockets = this.state.getWebSockets();
+    sockets.forEach(function (ws) {
       try {
         ws.send(message);
-        return true;
       } catch (e) {
-        return false;
+        // A socket in a bad state will show up as closed (or get pruned
+        // by the next heartbeat) on its own; nothing to clean up here.
       }
     });
   }
@@ -115,6 +186,7 @@ export default {
       if (group === null) return new Response('Account no longer exists', { status: 401 });
 
       const groupKey = groupKeyFor(username, group);
+      console.log('[Router] connect: username=' + username + ' group="' + group + '" -> groupKey=' + groupKey);
       const id = env.GROUP_ROOM.idFromName(groupKey);
       const stub = env.GROUP_ROOM.get(id);
       return stub.fetch(request);
@@ -135,6 +207,7 @@ export default {
         return json({ error: 'Missing username or entry.' }, 400);
       }
       const groupKey = groupKeyFor(payload.username, payload.group);
+      console.log('[Router] broadcast: username=' + payload.username + ' group="' + payload.group + '" -> groupKey=' + groupKey);
       const id = env.GROUP_ROOM.idFromName(groupKey);
       const stub = env.GROUP_ROOM.get(id);
       const forwardRequest = new Request('https://internal/broadcast', {

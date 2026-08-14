@@ -48,7 +48,8 @@ export async function onRequestPost(context) {
     hardcore: !!character.hardcore,
     pathMode: !!character.pathMode,
     manualBuild: !!character.manualBuild,
-    ssf: !!character.ssf
+    ssf: !!character.ssf,
+    server: character.server || null
   };
 
   if (type === 'levelup') {
