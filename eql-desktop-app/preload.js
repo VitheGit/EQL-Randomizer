@@ -10,6 +10,30 @@ contextBridge.exposeInMainWorld('eqlApp', {
   saveSettings: function (settings) {
     return ipcRenderer.invoke('save-settings', settings);
   },
+  sendChat: function (text) {
+    return ipcRenderer.invoke('send-chat', text);
+  },
+  onChatMessage: function (cb) {
+    ipcRenderer.on('chat-message', function (e, payload) { cb(payload); });
+  },
+  toggleChatOverlay: function () {
+    return ipcRenderer.invoke('toggle-chat-overlay');
+  },
+  setChatOverlayOpacity: function (value) {
+    return ipcRenderer.invoke('set-chat-overlay-opacity', value);
+  },
+  getChatOverlayState: function () {
+    return ipcRenderer.invoke('get-chat-overlay-state');
+  },
+  onChatOverlayState: function (cb) {
+    ipcRenderer.on('chat-overlay-state', function (e, open) { cb(open); });
+  },
+  onChatPresence: function (cb) {
+    ipcRenderer.on('chat-presence', function (e, users) { cb(users); });
+  },
+  onChatSystem: function (cb) {
+    ipcRenderer.on('chat-system', function (e, payload) { cb(payload); });
+  },
   showNotification: function (title, body, kind) {
     return ipcRenderer.invoke('show-notification', { title: title, body: body, kind: kind });
   },

@@ -30,6 +30,7 @@
     log: [], leaderboard: [], leaderboardResetAt: null,
     lbTab: 'randomized', // 'randomized' | 'manual'
     lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false, lbFilterD4: false,
+    chatMessages: [], chatInput: '', chatCollapsed: false, chatOnlineUsers: [], chatColor: '#2A2016', chatOverlayOpen: false, chatOverlayOpacity: 0.9,
     logTab: 'randomized', // 'randomized' | 'manual'
 
     settingsLogFilePath: '', settingsCharacterName: '',
@@ -187,11 +188,30 @@
     return parts.join(' ');
   }
 
+  // The 46-50 planes are brutal and can end a run outright, so the path
+  // display offers an explicit out. Applied at DISPLAY time rather than
+  // baked into stored paths, so it shows up immediately for characters
+  // that were already rolled, with no data migration needed.
+  // The 46-50 planes can end a run outright, so that row offers the
+  // player's own 40-46 zone as an alternative — pulled from their actual
+  // path rather than described generically, so they don't have to look
+  // it up. Applied at DISPLAY time, so characters rolled before this
+  // existed pick it up with no data migration.
+  function formatPathZone(b, path) {
+    var zone = b.zone || b.note || 'Anywhere';
+    if (!b.zone || b.range !== '46-50' || !path) return zone;
+    var prior = null;
+    path.forEach(function (p) {
+      if (p && p.range === '40-46' && p.zone) prior = p.zone;
+    });
+    return prior ? (prior + ' or ' + zone) : zone;
+  }
+
   function formatPathTooltip(path) {
     if (!path || !path.length) return 'Random Leveling Path';
     var lines = ['Leveling Path:'];
     path.forEach(function (b) {
-      lines.push(b.range + ': ' + (b.zone || b.note || 'Anywhere'));
+      lines.push(b.range + ': ' + formatPathZone(b, path));
     });
     return lines.join('\n');
   }
@@ -322,6 +342,7 @@
       state.manualBuild = !!character.manualBuild;
       state.hasSSF = !!character.ssf;
       state.hasD4 = !!character.d4;
+      state.rolledAt = character.rolledAt || null;
       state.locked = true;
     } else {
       state.primary = null;
@@ -335,6 +356,7 @@
       state.manualBuild = false;
       state.hasSSF = false;
       state.hasD4 = false;
+      state.rolledAt = null;
       state.locked = false;
     }
   }
@@ -531,8 +553,6 @@
     html += '<div class="card" id="character-card">' +
       (cardBadges ? '<div class="character-card-badges">' + cardBadges + '</div>' : '') +
       '<p class="result-label page-title">Your Character</p>' +
-      '<p class="primary-line">' + (state.primary || '???') + '</p>' +
-      '<p class="arrow">&#8595;</p>' +
       '<p class="race-line">' + (state.race || '???') + '</p>' +
       '<p class="race-tag">' + (state.primary ? 'Race, eligible for ' + state.primary : 'Race') + '</p>' +
       '<div class="trio">' +
@@ -655,10 +675,14 @@
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.path) + '"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.d4) + '"><input type="checkbox" id="in-d4"' + (state.d4Toggle ? ' checked' : '') + ' /> D4 Only</label>' +
       '</div>';
-    } else if (state.hasPath && state.levelingPath) {
+    }
+
+    html += renderChatCard();
+
+    if (state.locked && state.hasPath && state.levelingPath) {
       html += '<div class="card"><h3>Leveling Path</h3><ul class="path-list">' +
         state.levelingPath.map(function (b) {
-          return '<li><span class="path-range">' + escapeHtml(b.range) + '</span><span>' + escapeHtml(b.zone || b.note || 'Anywhere') + '</span></li>';
+          return '<li><span class="path-range">' + escapeHtml(b.range) + '</span><span>' + escapeHtml(formatPathZone(b, state.levelingPath)) + '</span></li>';
         }).join('') +
       '</ul></div>';
     }
@@ -672,6 +696,126 @@
     html += '<div class="badges-row">' + watchBadge + groupBadge + '</div>';
 
     return html;
+  }
+
+  // Must stay in sync with CHAT_COLORS in the realtime worker — it
+  // validates against its own copy and falls back to the first entry
+  // for anything it doesn't recognize.
+  var CHAT_COLORS = [
+    { value: '#2A2016', label: 'Ink' },
+    { value: '#8C3B2A', label: 'Ember' },
+    { value: '#A85A1F', label: 'Rust' },
+    { value: '#8A6A22', label: 'Bronze' },
+    { value: '#4B5A3A', label: 'Moss' },
+    { value: '#1F6B6B', label: 'Teal' },
+    { value: '#2C4A7C', label: 'Blue' },
+    { value: '#6B3A7C', label: 'Violet' },
+    { value: '#9B2242', label: 'Crimson' }
+  ];
+
+  var CHAT_MAX_MESSAGES = 200;
+
+  // Separate from the notification sounds (which live in the toast
+  // window) — chat arrives in this window, so it plays here.
+  var chatPopSound = new Audio('sounds/chat_pop.wav');
+
+  function playChatPop() {
+    // Follows the same Notification Sounds toggle and volume slider, so
+    // muting the app mutes everything rather than leaving one stray
+    // sound the user can't find a switch for.
+    if (!state.soundsEnabled) return;
+    try {
+      chatPopSound.volume = Math.max(0, Math.min(1, 0.6 * (typeof state.notificationVolume === 'number' ? state.notificationVolume : 1)));
+      chatPopSound.currentTime = 0;
+      chatPopSound.play().catch(function () { /* autoplay quirk — not worth surfacing */ });
+    } catch (e) { /* ignore playback errors */ }
+  }
+
+  function renderChatCard() {
+    // Chat is group-scoped by definition — with no group there's nobody
+    // to talk to, so the card explains that rather than offering a dead
+    // input box.
+    if (!state.groupName) {
+      return '<div class="card">' +
+        '<h3>Group Chat</h3>' +
+        '<p class="hint">Set a Group Name in Settings to chat with your group.</p>' +
+      '</div>';
+    }
+
+    var body = state.chatMessages.length === 0
+      ? '<p class="empty-text">No messages yet — say hello!</p>'
+      : state.chatMessages.map(function (m) {
+          var t = formatChatTime(m.time);
+          if (m.system) {
+            return '<div class="chat-line chat-system">' +
+              '<span class="chat-time">' + escapeHtml(t) + '</span>' +
+              '<span class="chat-text">' + escapeHtml(m.text) + '</span>' +
+            '</div>';
+          }
+          var colorAttr = m.color ? ' style="color:' + escapeHtml(m.color) + ';"' : '';
+          return '<div class="chat-line">' +
+            '<span class="chat-time">' + escapeHtml(t) + '</span>' +
+            '<span class="chat-from"' + colorAttr + '>' + escapeHtml(m.from) + ':</span>' +
+            '<span class="chat-text">' + escapeHtml(m.text) + '</span>' +
+          '</div>';
+        }).join('');
+
+    var online = state.chatOnlineUsers || [];
+    var roster = online.length === 0
+      ? '<p class="chat-online-empty">Nobody else online</p>'
+      : online.map(function (u) {
+          var mine = u === state.username;
+          return '<div class="chat-online-user' + (mine ? ' chat-mine' : '') + '">' +
+            '<span class="chat-online-dot"></span>' + escapeHtml(u) +
+          '</div>';
+        }).join('');
+
+    return '<div class="card">' +
+      '<h3>Group Chat — ' + escapeHtml(state.groupName) + '</h3>' +
+      '<div class="chat-body">' +
+        '<div class="chat-scroll" id="chat-scroll">' + body + '</div>' +
+        '<div class="chat-online">' +
+          '<div class="chat-online-title">Online (' + online.length + ')</div>' +
+          roster +
+        '</div>' +
+      '</div>' +
+      '<div class="chat-input-row">' +
+        '<input type="text" id="in-chat" maxlength="500" placeholder="Message your group…" value="' + escapeHtml(state.chatInput) + '" />' +
+        '<button class="btn btn-primary" id="btn-chat-send">Send</button>' +
+      '</div>' +
+      '<div class="chat-controls-row">' +
+        '<span class="chat-swatches" title="Your chat name color">' +
+          CHAT_COLORS.map(function (col) {
+            return '<button type="button" class="chat-swatch' + (state.chatColor === col.value ? ' selected' : '') + '"' +
+              ' data-color="' + col.value + '" title="Name color: ' + escapeHtml(col.label) + '"' +
+              ' style="background:' + col.value + ';"></button>';
+          }).join('') +
+        '</span>' +
+        '<label class="chat-opacity-label" for="in-overlay-opacity">Opacity</label>' +
+        '<input type="range" id="in-overlay-opacity" min="20" max="100" value="' + Math.round(state.chatOverlayOpacity * 100) + '" />' +
+        '<span class="chat-opacity-value" id="overlay-opacity-value">' + Math.round(state.chatOverlayOpacity * 100) + '%</span>' +
+        '<button class="btn btn-ghost chat-action-btn' + (state.chatOverlayOpen ? ' active' : '') + '" id="btn-chat-overlay">' +
+          (state.chatOverlayOpen ? 'Close' : 'Overlay') +
+        '</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function formatChatTime(iso) {
+    try {
+      var d = new Date(iso);
+      var h = d.getHours(), m = d.getMinutes();
+      var ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+    } catch (e) { return ''; }
+  }
+
+  function pushChatMessage(msg) {
+    state.chatMessages.push(msg);
+    if (state.chatMessages.length > CHAT_MAX_MESSAGES) {
+      state.chatMessages = state.chatMessages.slice(-CHAT_MAX_MESSAGES);
+    }
   }
 
   function renderLeaderboardView() {
@@ -997,6 +1141,49 @@
     var manualCreateBtn = document.getElementById('btn-manual-create');
     if (manualCreateBtn) manualCreateBtn.addEventListener('click', handleManualCreate);
 
+    var chatInput = document.getElementById('in-chat');
+    if (chatInput) {
+      chatInput.addEventListener('input', function (e) { state.chatInput = e.target.value; });
+      chatInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); handleSendChat(); }
+      });
+    }
+    var chatSendBtn = document.getElementById('btn-chat-send');
+    if (chatSendBtn) chatSendBtn.addEventListener('click', handleSendChat);
+
+    var opacitySlider = document.getElementById('in-overlay-opacity');
+    if (opacitySlider) {
+      var opacityLabel = document.getElementById('overlay-opacity-value');
+      opacitySlider.addEventListener('input', async function (e) {
+        // Applied live so the effect is visible while dragging, but the
+        // label is updated directly rather than via render() — a full
+        // re-render mid-drag would drop the slider's focus.
+        var v = Number(e.target.value) / 100;
+        state.chatOverlayOpacity = v;
+        if (opacityLabel) opacityLabel.textContent = Math.round(v * 100) + '%';
+        await window.eqlApp.setChatOverlayOpacity(v);
+      });
+    }
+
+    var overlayBtn = document.getElementById('btn-chat-overlay');
+    if (overlayBtn) overlayBtn.addEventListener('click', async function () {
+      var res = await window.eqlApp.toggleChatOverlay();
+      state.chatOverlayOpen = !!(res && res.open);
+      render();
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.chat-swatch'), function (btn) {
+      btn.addEventListener('click', async function () {
+        state.chatColor = btn.getAttribute('data-color');
+        await window.eqlApp.saveSettings({ chatColor: state.chatColor });
+        render();
+      });
+    });
+
+    // Keep the transcript pinned to the newest message after each render.
+    var chatScroll = document.getElementById('chat-scroll');
+    if (chatScroll) chatScroll.scrollTop = chatScroll.scrollHeight;
+
     var lbTabRandomized = document.getElementById('tab-lb-randomized');
     if (lbTabRandomized) lbTabRandomized.addEventListener('click', function () { state.lbTab = 'randomized'; render(); });
     var lbTabManual = document.getElementById('tab-lb-manual');
@@ -1212,7 +1399,7 @@
     }
     applyCharacterFromServer(res.data.character);
     render();
-    window.eqlApp.notifyCharacterRolled({ d4: state.hasD4 });
+    window.eqlApp.notifyCharacterRolled({ d4: state.hasD4, classes: [state.primary, state.secondary, state.tertiary].filter(Boolean), rolledAt: state.rolledAt });
     await refreshSharedData();
     render();
   }
@@ -1246,7 +1433,7 @@
     state.manualMode = false;
     state.manualRace = ''; state.manualPrimary = ''; state.manualSecondary = ''; state.manualTertiary = '';
     render();
-    window.eqlApp.notifyCharacterRolled({ d4: state.hasD4 });
+    window.eqlApp.notifyCharacterRolled({ d4: state.hasD4, classes: [state.primary, state.secondary, state.tertiary].filter(Boolean), rolledAt: state.rolledAt });
     await refreshSharedData();
     render();
   }
@@ -1397,6 +1584,19 @@
     render();
   }
 
+  async function handleSendChat() {
+    var text = (state.chatInput || '').trim();
+    if (!text || !state.groupName) return;
+    var res = await window.eqlApp.sendChat(text);
+    state.chatInput = '';
+    if (res && res.ok === false) {
+      pushChatMessage({ system: true, text: 'Could not send — not connected to the group right now.', time: new Date().toISOString() });
+    }
+    render();
+    var el = document.getElementById('in-chat');
+    if (el) el.focus();
+  }
+
   // ---- Admin actions ----
 
   function handleClearClick(target) {
@@ -1454,6 +1654,31 @@
     render();
   });
 
+  window.eqlApp.onChatMessage(function (msg) {
+    pushChatMessage({ from: msg.from, text: msg.text, time: msg.time, color: msg.color });
+    // No sound for your own message echoing back — you know you sent it.
+    if (msg.from !== state.username) playChatPop();
+    render();
+  });
+
+  window.eqlApp.onChatOverlayState(function (open) {
+    state.chatOverlayOpen = !!open;
+    render();
+  });
+
+  window.eqlApp.onChatPresence(function (users) {
+    state.chatOnlineUsers = users || [];
+    render();
+  });
+
+  window.eqlApp.onChatSystem(function (payload) {
+    // Notifications double as a shared record of what happened, so they
+    // land in the chat transcript too.
+    var text = payload.title + (payload.body ? ' — ' + payload.body : '');
+    pushChatMessage({ system: true, text: text, time: payload.time });
+    render();
+  });
+
   window.eqlApp.onUpdateStatus(function (payload) {
     state.updateStatus = payload;
     render();
@@ -1475,6 +1700,8 @@
     state.notificationsEnabled = settings.notificationsEnabled !== false;
     state.notificationVolume = typeof settings.notificationVolume === 'number' ? settings.notificationVolume : 1.0;
     state.notificationPosition = settings.notificationPosition || 'top-middle';
+    state.chatColor = settings.chatColor || '#2A2016';
+    state.chatOverlayOpacity = typeof settings.chatOverlayOpacity === 'number' ? settings.chatOverlayOpacity : 0.9;
 
     state.appVersion = await window.eqlApp.getAppVersion();
     state.updateStatus = await window.eqlApp.getUpdateStatus();
@@ -1487,7 +1714,7 @@
         state.groupName = res.data.group || '';
         state.groupInput = res.data.group || '';
         if (state.locked) {
-          window.eqlApp.notifyCharacterLockedSync({ d4: state.hasD4 });
+          window.eqlApp.notifyCharacterLockedSync({ d4: state.hasD4, classes: [state.primary, state.secondary, state.tertiary].filter(Boolean), rolledAt: state.rolledAt });
         }
         await refreshSharedData();
         var status = await window.eqlApp.getWatchStatus();

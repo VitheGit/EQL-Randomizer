@@ -80,9 +80,7 @@
     font-weight: 700;
     letter-spacing: 0.05em;
   }
-  .primary-line { font-weight: 700; font-size: 22px; text-align: center; margin: 0; }
-  .arrow { text-align: center; color: var(--bronze); margin: 4px 0; }
-  .race-line { font-weight: 900; font-size: 30px; color: var(--ember); text-align: center; margin: 0 0 2px; min-height: 1.2em; }
+  .race-line { font-weight: 900; font-size: 30px; color: var(--ember); text-align: center; margin: 4px 0 2px; min-height: 1.2em; }
   .race-tag { font-size: 11px; color: var(--ink-soft); text-align: center; text-transform: uppercase; margin: 0 0 18px; }
 
   .trio { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
@@ -180,6 +178,62 @@
   .lb-filters .field { min-width: 120px; flex: 1 1 120px; }
   .lb-filters .lb-filter-status-field { min-width: 90px; flex: 0 1 90px; }
   .lb-filter-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; padding-bottom: 9px; }
+
+  .chat-body { display: flex; gap: 10px; margin-bottom: 10px; align-items: stretch; }
+  .chat-body .chat-scroll { flex: 1; min-width: 0; margin-bottom: 0; }
+  .chat-online {
+    width: 150px; flex-shrink: 0; overflow-y: auto; max-height: 220px;
+    background: rgba(255,255,255,0.35); border: 1px solid var(--bronze);
+    border-radius: 4px; padding: 8px 10px;
+  }
+  .chat-online-title {
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--moss); font-weight: 700; margin-bottom: 6px;
+  }
+  .chat-online-user { font-size: 12px; line-height: 1.6; color: var(--ink); display: flex; align-items: center; }
+  .chat-online-user.chat-mine { color: var(--ember); font-weight: 700; }
+  .chat-online-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: #4C8A4C;
+    display: inline-block; margin-right: 6px; flex-shrink: 0;
+  }
+  .chat-online-empty { font-size: 11px; color: var(--ink-soft); font-style: italic; margin: 0; }
+  @media (max-width: 900px) {
+    .chat-body { flex-direction: column; }
+    .chat-online { width: auto; max-height: 110px; }
+  }
+
+  .chat-scroll {
+    max-height: 220px; overflow-y: auto; margin-bottom: 10px;
+    background: rgba(255,255,255,0.35); border: 1px solid var(--bronze);
+    border-radius: 4px; padding: 8px 10px;
+  }
+  .chat-line { font-size: 13px; line-height: 1.5; margin-bottom: 2px; word-wrap: break-word; }
+  .chat-time { color: var(--ink-soft); font-size: 10px; margin-right: 6px; opacity: 0.75; }
+  .chat-from { font-weight: 700; margin-right: 5px; color: var(--ink); }
+  .chat-from.chat-mine { color: var(--ember); }
+  .chat-text { color: var(--ink); }
+  .chat-system .chat-text { color: var(--moss); font-style: italic; }
+  .chat-input-row { display: flex; gap: 8px; }
+  /* Opacity, name-color swatches and the overlay toggle share one row. */
+  .chat-controls-row { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chat-opacity-label { font-size: 11px; color: var(--ink-soft); font-style: italic; white-space: nowrap; flex-shrink: 0; }
+  .chat-controls-row input[type="range"] { flex: 1; min-width: 70px; }
+  .chat-opacity-value { font-size: 11px; color: var(--ink-soft); width: 34px; text-align: right; flex-shrink: 0; }
+  .chat-swatches { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .chat-controls-row .btn.active { background: var(--ember); color: var(--parchment); border-color: var(--ember); }
+  /* Keeps Send and Overlay the same footprint so the rows line up. */
+  .chat-input-row .btn, .chat-action-btn { min-width: 88px; flex-shrink: 0; }
+  .chat-swatch {
+    width: 18px; height: 18px; border-radius: 50%; padding: 0;
+    border: 2px solid rgba(42,32,22,0.25); cursor: pointer; flex-shrink: 0;
+  }
+  .chat-swatch:hover { border-color: rgba(42,32,22,0.55); }
+  .chat-swatch.selected {
+    border-color: var(--ink);
+    box-shadow: 0 0 0 2px var(--parchment), 0 0 0 3px var(--ink);
+  }
+  .chat-input-row input { flex: 1; }
+  .chat-input-row .btn { flex-shrink: 0; }
 
   .list-scroll { max-height: 650px; overflow-y: auto; }
 

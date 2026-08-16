@@ -13,6 +13,15 @@
 // scheme ever changes, this must be updated to match or rooms will
 // silently stop lining up with the right group.
 
+// Chat name colors are restricted to a fixed palette rather than free
+// input: it keeps everything readable against the parchment background,
+// and means a client can never inject arbitrary values into what other
+// people render.
+const CHAT_COLORS = [
+  '#2A2016', '#8C3B2A', '#A85A1F', '#8A6A22',
+  '#4B5A3A', '#1F6B6B', '#2C4A7C', '#6B3A7C', '#9B2242'
+];
+
 function groupKeyFor(username, rawGroup) {
   const g = (rawGroup || '').toString().trim().slice(0, 60);
   return g ? ('group:' + g.toLowerCase()) : ('solo:' + username.toLowerCase());
@@ -79,7 +88,11 @@ export class GroupRoom {
       this.state.acceptWebSocket(server);
       // Give it a fresh "last heard from" timestamp so it isn't
       // immediately treated as stale before its first heartbeat cycle.
-      server.serializeAttachment({ lastPong: Date.now() });
+      server.serializeAttachment({
+        lastPong: Date.now(),
+        username: request.headers.get('X-EQL-Username') || null,
+        lastChatAt: 0
+      });
       console.log('[GroupRoom] connection accepted. Total sockets now:', this.state.getWebSockets().length);
       await this.ensureHeartbeatScheduled();
       return new Response(null, { status: 101, webSocket: client });
@@ -117,18 +130,30 @@ export class GroupRoom {
     const now = Date.now();
     console.log('[GroupRoom] heartbeat check — sockets:', sockets.length);
 
-    sockets.forEach(function (ws) {
+    sockets.forEach(function (ws, i) {
       var lastPong = now;
+      var attachmentFound = false;
       try {
         var attachment = ws.deserializeAttachment();
-        if (attachment && attachment.lastPong) lastPong = attachment.lastPong;
+        if (attachment && attachment.lastPong) {
+          lastPong = attachment.lastPong;
+          attachmentFound = true;
+        }
       } catch (e) { /* no attachment yet — treat as fresh */ }
 
-      if (now - lastPong > STALE_THRESHOLD_MS) {
-        console.log('[GroupRoom] closing stale socket — no pong for', now - lastPong, 'ms');
-        try { ws.close(1000, 'stale connection'); } catch (e) { /* already gone */ }
+      var diff = now - lastPong;
+      console.log('[GroupRoom] socket #' + i + ': attachmentFound=' + attachmentFound + ' lastPong=' + lastPong + ' now=' + now + ' diff=' + diff + 'ms (threshold=' + STALE_THRESHOLD_MS + 'ms)');
+
+      if (diff > STALE_THRESHOLD_MS) {
+        console.log('[GroupRoom] closing stale socket #' + i + ' — no pong for', diff, 'ms');
+        try { ws.close(1000, 'stale connection'); } catch (e) { console.log('[GroupRoom] close() threw:', e.message); }
       } else {
-        try { ws.send(JSON.stringify({ type: 'ping' })); } catch (e) { /* will show as stale next cycle */ }
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }));
+          console.log('[GroupRoom] sent ping to socket #' + i);
+        } catch (e) {
+          console.log('[GroupRoom] send(ping) threw for socket #' + i + ':', e.message);
+        }
       }
     });
 
@@ -142,23 +167,92 @@ export class GroupRoom {
   // right after a hibernation wake-up, when this class has just been
   // freshly re-constructed with no memory of prior state.
   async webSocketMessage(ws, message) {
+    let att = {};
+    try { att = ws.deserializeAttachment() || {}; } catch (e) { att = {}; }
+
+    let data = null;
     try {
-      const data = JSON.parse(message);
-      if (data && data.type === 'pong') {
-        ws.serializeAttachment({ lastPong: Date.now() });
-      }
+      data = JSON.parse(message);
     } catch (e) {
-      // Not JSON, or not a pong — nothing to do.
+      console.log('[GroupRoom] webSocketMessage JSON parse failed:', e.message);
+      return;
+    }
+    if (!data || !data.type) return;
+
+    if (data.type === 'pong') {
+      // Merge rather than replace — the attachment also carries the
+      // socket's username, which must survive every heartbeat.
+      att.lastPong = Date.now();
+      ws.serializeAttachment(att);
+      return;
+    }
+
+    if (data.type === 'hello') {
+      // Sent by a client once its socket is genuinely open. Using this
+      // rather than broadcasting at accept-time avoids a race where the
+      // roster goes out before the new client can receive it.
+      this.broadcastRoster();
+      return;
+    }
+
+    if (data.type === 'chat') {
+      const text = String(data.text == null ? '' : data.text).trim().slice(0, 500);
+      if (!text) return;
+      // Attribution comes from the server-verified username stored at
+      // connect time — never from the message payload.
+      const from = att.username;
+      if (!from) return;
+
+      // Light rate limit so one client can't flood the room.
+      const now = Date.now();
+      if (att.lastChatAt && now - att.lastChatAt < 750) return;
+      att.lastChatAt = now;
+      ws.serializeAttachment(att);
+
+      const color = CHAT_COLORS.indexOf(data.color) !== -1 ? data.color : CHAT_COLORS[0];
+
+      this.broadcast(JSON.stringify({
+        type: 'chat',
+        from: from,
+        text: text,
+        color: color,
+        time: new Date(now).toISOString()
+      }));
+      return;
     }
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
+    console.log('[GroupRoom] webSocketClose fired. code=' + code + ' reason=' + reason + ' wasClean=' + wasClean);
+    // Someone left — tell everyone still here so their list updates.
+    try { this.broadcastRoster(); } catch (e) { /* non-critical */ }
     // No manual cleanup needed — a closed socket just stops appearing in
     // future state.getWebSockets() calls on its own.
   }
 
   async webSocketError(ws, error) {
     // Same as above — nothing to do here.
+  }
+
+  // The room already holds a socket per connected member, each tagged
+  // with its username — so presence needs no storage, just a read of
+  // what's currently connected. Deduped, since one person can briefly
+  // hold two sockets during a reconnect.
+  getRoster() {
+    const seen = {};
+    this.state.getWebSockets().forEach(function (ws) {
+      try {
+        const a = ws.deserializeAttachment();
+        if (a && a.username) seen[a.username] = true;
+      } catch (e) { /* socket without an attachment — skip */ }
+    });
+    return Object.keys(seen).sort(function (a, b) {
+      return a.toLowerCase().localeCompare(b.toLowerCase());
+    });
+  }
+
+  broadcastRoster() {
+    this.broadcast(JSON.stringify({ type: 'presence', users: this.getRoster() }));
   }
 
   broadcast(message) {
@@ -189,7 +283,12 @@ export default {
       console.log('[Router] connect: username=' + username + ' group="' + group + '" -> groupKey=' + groupKey);
       const id = env.GROUP_ROOM.idFromName(groupKey);
       const stub = env.GROUP_ROOM.get(id);
-      return stub.fetch(request);
+      // Forward the SERVER-VERIFIED username to the room. Chat messages
+      // are attributed from this, never from anything the client sends,
+      // so nobody can post under someone else's name.
+      const fwd = new Request(request, request);
+      fwd.headers.set('X-EQL-Username', username);
+      return stub.fetch(fwd);
     }
 
     if (url.pathname === '/broadcast' && request.method === 'POST') {

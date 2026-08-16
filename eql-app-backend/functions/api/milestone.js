@@ -33,7 +33,7 @@ export async function onRequestPost(context) {
   try { body = await request.json(); } catch (e) { /* ignore */ }
 
   const type = body.type;
-  if (type !== 'levelup' && type !== 'aa') {
+  if (type !== 'levelup' && type !== 'aa' && type !== 'achievement') {
     return json({ error: 'Invalid milestone type.' }, 400);
   }
 
@@ -60,6 +60,12 @@ export async function onRequestPost(context) {
       return json({ error: 'Invalid level.' }, 400);
     }
     entry.level = level;
+  } else if (type === 'achievement') {
+    const achievement = String(body.achievement == null ? '' : body.achievement).trim().slice(0, 120);
+    if (!achievement) {
+      return json({ error: 'Invalid achievement name.' }, 400);
+    }
+    entry.achievement = achievement;
   } else {
     const aaTotal = Number(body.aaTotal);
     if (!Number.isFinite(aaTotal) || aaTotal < 0) {

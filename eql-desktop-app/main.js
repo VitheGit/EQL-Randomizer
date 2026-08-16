@@ -40,6 +40,7 @@ function runApp() {
 let mainWindow = null;
 let tray = null;
 let notifyWindow = null;
+let chatOverlayWindow = null;
 
 // ---- Auto-update state ----
 // status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -206,6 +207,13 @@ function getNotifyWindow() {
 }
 
 function notify(title, body, kind) {
+  // Mirror into the group chat as a system line. Done here so EVERY
+  // notification path is covered automatically, and deliberately before
+  // the notificationsEnabled check — turning off popups shouldn't also
+  // blank out the chat history of what happened.
+  var sysEntry = { title: title, body: body, kind: kind || 'info', time: new Date().toISOString() };
+  recordChat({ system: true, text: title + (body ? ' — ' + body : ''), time: sysEntry.time });
+  sendToChatWindows('chat-system', sysEntry);
   try {
     const settings = loadSettings();
     if (!settings.notificationsEnabled) return; // master switch — nothing shows at all, not even silently
@@ -224,6 +232,23 @@ function notify(title, body, kind) {
   } catch (e) {
     console.error('Custom notification failed:', e);
   }
+}
+
+// The overlay is a second window that can open at any time, so main
+// keeps a short rolling buffer of chat — otherwise opening the overlay
+// mid-conversation would show an empty box.
+var chatHistory = [];
+var lastPresence = [];
+var CHAT_HISTORY_MAX = 100;
+function recordChat(entry) {
+  chatHistory.push(entry);
+  if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory = chatHistory.slice(-CHAT_HISTORY_MAX);
+}
+
+// Chat/presence must reach BOTH the main window and the overlay.
+function sendToChatWindows(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  if (chatOverlayWindow && !chatOverlayWindow.isDestroyed()) chatOverlayWindow.webContents.send(channel, payload);
 }
 
 function sendToRenderer(channel, payload) {
@@ -370,6 +395,30 @@ const SELF_DEATH_RE = /\]\s*You have been slain by (.+?)!/;
 const AA_GAIN_RE = /\]\s*You have gained an ability point!\s*You now have (\d+) ability points?\./;
 const ZONE_ENTER_RE = /\]\s*You have entered ([^.]+)\./;
 
+// EQ log lines are prefixed like "[Wed Jul 29 12:38:40 2026] ...".
+// Returns null for anything that doesn't parse, so callers can decide
+// how to treat an unknown timestamp rather than trusting a bad date.
+function parseLogTimestamp(line) {
+  const m = line.match(/^\[([A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4})\]/);
+  if (!m) return null;
+  const d = new Date(m[1]);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// A /who result line, e.g.:
+//   [35 CLR/SHD/BER] Vithe (Troll) <Loot Kills> ZONE: The Lair of the Splitpaw (paw)
+//   [1 SHD/BRD] Gloond (Froglok)
+// Characters have only two classes below level 10, so the third is
+// optional. Guild tag and ZONE suffix are both optional too.
+const WHO_LINE_RE = /\]\s*\[\s*(\d+)\s+([A-Z]{3}(?:\/[A-Z]{3}){0,2})\]\s+(\S+)\s+\(/;
+
+const CLASS_ABBR = {
+  'Enchanter': 'ENC', 'Magician': 'MAG', 'Necromancer': 'NEC', 'Wizard': 'WIZ',
+  'Bard': 'BRD', 'Beastlord': 'BST', 'Paladin': 'PAL', 'Ranger': 'RNG',
+  'Shadow Knight': 'SHD', 'Cleric': 'CLR', 'Druid': 'DRU', 'Shaman': 'SHM',
+  'Berserker': 'BER', 'Monk': 'MNK', 'Rogue': 'ROG', 'Warrior': 'WAR'
+};
+
 var watchState = {
   timer: null,
   lastSize: 0,
@@ -384,7 +433,15 @@ var watchState = {
   // Whether the current active character has "D4 Only" enabled — drives
   // the zone-enter reminder below. Kept in sync by the renderer via the
   // character-rolled/character-locked-sync/character-unlocked IPC calls.
-  characterD4: false
+  characterD4: false,
+  // The rolled character's classes, for verifying /who output against
+  // what they're actually logged into. Kept in sync by the renderer.
+  characterClasses: null,
+  // When the current character was rolled — used to ignore log history
+  // belonging to a previous character that shared this log file.
+  characterRolledAt: null,
+  // Guards against re-notifying about the same mismatch on every /who.
+  lastMismatchNotifiedAt: 0
 };
 
 function stopLogWatching() {
@@ -407,19 +464,30 @@ function startLogWatching(logPath, characterName) {
     // Recover the most recently known level from the file's existing
     // history, so restarting the app mid-session (e.g. to apply an
     // update) doesn't lose track and silently report "level 1" on the
-    // next death. This is a best-effort heuristic — it can't tell where
-    // one character's history ends and a new one begins, so it may be
-    // briefly stale if you've already rolled a new character since the
-    // last level-up line but haven't leveled again yet.
+    // next death.
+    //
+    // Crucially, only level-ups logged AFTER the current character was
+    // rolled count. A deleted-and-remade character reuses the same log
+    // file, so the previous character's level-ups are still sitting in
+    // there — without this cutoff, a fresh level 1 would inherit the
+    // dead character's level and report the wrong one on death.
     try {
       const content = fs.readFileSync(logPath, 'utf8');
-      const globalLevelRe = new RegExp(LEVEL_UP_RE.source, 'g');
-      const matches = content.match(globalLevelRe);
-      if (matches && matches.length) {
-        const lastLine = matches[matches.length - 1];
-        const lastMatch = lastLine.match(LEVEL_UP_RE);
-        if (lastMatch) watchState.currentLevel = parseInt(lastMatch[1], 10);
+      const rolledAt = watchState.characterRolledAt ? new Date(watchState.characterRolledAt) : null;
+      const lines = content.split(/\r?\n/);
+      let recovered = null;
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(LEVEL_UP_RE);
+        if (!m) continue;
+        if (rolledAt) {
+          const stamp = parseLogTimestamp(lines[i]);
+          if (!stamp || stamp < rolledAt) continue; // belongs to an earlier character
+        }
+        recovered = parseInt(m[1], 10);
       }
+      // No qualifying level-up means this character hasn't leveled yet —
+      // that's level 1, not "unknown".
+      watchState.currentLevel = recovered !== null ? recovered : (watchState.characterActive ? 1 : null);
     } catch (e) {
       // Non-fatal — just means we start without a recovered level.
     }
@@ -470,7 +538,101 @@ async function pollLogFile() {
   }
 }
 
+// Throttled so ordinary chat/combat spam doesn't hammer the backend —
+// the repairs this triggers are rare and not time-critical, so checking
+// a few times an hour is plenty.
+var SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+var lastSyncAt = 0;
+
+async function syncSharedState(force) {
+  const s = loadSettings();
+  if (!s.apiBaseUrl || !s.token) return;
+  if (!watchState.characterActive) return; // nothing to repair without an active character
+  const now = Date.now();
+  if (!force && now - lastSyncAt < SYNC_MIN_INTERVAL_MS) return;
+  lastSyncAt = now;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(function () { controller.abort(); }, 15000);
+    let res;
+    try {
+      res = await fetch(s.apiBaseUrl.replace(/\/$/, '') + '/api/sync', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + s.token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: watchState.currentLevel || null })
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    const data = await res.json().catch(function () { return null; });
+    if (data && data.repaired) {
+      realtimeDebugLog('SYNC — repaired shared state: ' + JSON.stringify(data));
+      pollSharedLog(); // pull the corrected log so the UI updates right away
+    }
+  } catch (e) {
+    realtimeDebugLog('SYNC — failed: ' + (e && e.message));
+  }
+}
+
+// Handles a single /who result line. Only acts on the line matching the
+// player's own configured character name — /who lists the whole zone.
+var MISMATCH_NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
+
+function handleWhoLine(level, classStr, name) {
+  if (!watchState.characterActive) return;
+  if (!watchState.characterName) return;
+  if (name.toLowerCase() !== watchState.characterName.trim().toLowerCase()) return;
+
+  const reported = classStr.split('/');
+
+  // Verify classes against the rolled character. Below level 10 a
+  // character only has two classes, so a two-class /who line is a valid
+  // prefix match rather than a mismatch.
+  if (watchState.characterClasses && watchState.characterClasses.length) {
+    const expected = watchState.characterClasses.map(function (cls) {
+      return CLASS_ABBR[cls] || String(cls).toUpperCase();
+    });
+    let mismatch = false;
+    for (let i = 0; i < reported.length; i++) {
+      if (!expected[i] || reported[i] !== expected[i]) { mismatch = true; break; }
+    }
+    // More classes shown than the character should have is also wrong.
+    if (reported.length > expected.length) mismatch = true;
+
+    if (mismatch) {
+      const now = Date.now();
+      if (now - watchState.lastMismatchNotifiedAt > MISMATCH_NOTIFY_COOLDOWN_MS) {
+        watchState.lastMismatchNotifiedAt = now;
+        notify('Character Mismatch', "You're character classes don't match your rolled character, please log into the correct character, or reroll!", 'error');
+        realtimeDebugLog('WHO — class mismatch. expected=' + expected.join('/') + ' reported=' + reported.join('/'));
+      }
+      // Don't push a level correction for a character that isn't the
+      // rolled one — that would corrupt the leaderboard with the wrong
+      // character's progress.
+      return;
+    }
+  }
+
+  // Classes check out (or we have nothing to compare against) — use the
+  // authoritative level from /who to correct the leaderboard if it's
+  // behind. syncSharedState only writes when something actually differs.
+  if (Number.isFinite(level) && level > 0) {
+    // /who is authoritative — it reports what the game itself says, so
+    // it corrects a stale HIGH value just as readily as a low one.
+    if (watchState.currentLevel !== level) {
+      watchState.currentLevel = level;
+      sendToRenderer('level-update', level);
+    }
+    syncSharedState(true);
+  }
+}
+
 function processLogLine(line) {
+  // ANY in-game activity is a chance to notice and repair a stale shared
+  // view (a cleared log, or level-ups missed while the app was closed).
+  // Throttled internally, and a no-op when nothing actually needs fixing.
+  syncSharedState(false);
+
   const levelMatch = line.match(LEVEL_UP_RE);
   if (levelMatch) {
     const level = parseInt(levelMatch[1], 10);
@@ -500,6 +662,12 @@ function processLogLine(line) {
   if (/\bentered\b/i.test(line)) {
     realtimeDebugLog('ZONE — line contains "entered": ' + JSON.stringify(line));
   }
+  const whoMatch = line.match(WHO_LINE_RE);
+  if (whoMatch) {
+    handleWhoLine(parseInt(whoMatch[1], 10), whoMatch[2], whoMatch[3]);
+    return;
+  }
+
   const zoneMatch = line.match(ZONE_ENTER_RE);
   if (zoneMatch) {
     var zoneName = zoneMatch[1].trim();
@@ -527,6 +695,8 @@ function processLogLine(line) {
     notify('You Died', (watchState.characterName || 'Your character') + ' was slain by ' + killer + ' at level ' + level + '.', 'death');
     autoSubmit('died', level, killer);
     watchState.currentLevel = null;
+    watchState.characterRolledAt = null;
+    watchState.characterClasses = null;
   }
 }
 
@@ -579,6 +749,9 @@ function connectRealtime() {
 
   ws.on('open', function () {
     realtimeDebugLog('OPEN — connection established');
+    // Announce ourselves so the room broadcasts an updated presence
+    // roster that includes us.
+    try { ws.send(JSON.stringify({ type: 'hello' })); } catch (e) { /* ignore */ }
     realtimeReconnectDelay = 2000; // reset backoff on a successful connection
     // Reconnecting (or connecting for the first time) might mean we
     // missed something — do one immediate check to catch up.
@@ -594,6 +767,18 @@ function connectRealtime() {
     var msg = null;
     try { msg = JSON.parse(rawText); } catch (e) {
       realtimeDebugLog('MESSAGE — JSON.parse failed: ' + e.message);
+    }
+
+    if (msg && msg.type === 'presence') {
+      lastPresence = msg.users || [];
+      sendToChatWindows('chat-presence', lastPresence);
+      return;
+    }
+
+    if (msg && msg.type === 'chat') {
+      recordChat({ from: msg.from, text: msg.text, time: msg.time, color: msg.color });
+      sendToChatWindows('chat-message', msg);
+      return;
     }
 
     if (msg && msg.type === 'ping') {
@@ -618,6 +803,10 @@ function connectRealtime() {
 
   ws.on('close', function (code, reason) {
     realtimeDebugLog('CLOSE — code=' + code + ' reason=' + (reason ? reason.toString() : '(none)'));
+    // Without a connection we can't know who's online — show nobody
+    // rather than a stale list.
+    lastPresence = [];
+    sendToChatWindows('chat-presence', []);
     if (realtimeSocket === ws) realtimeSocket = null;
     if (!realtimeIntentionalClose) scheduleRealtimeReconnect();
   });
@@ -750,6 +939,7 @@ async function pollSharedLogInner() {
       const newEntries = log.slice(lastSeenLogLength);
       newEntries.forEach(function (entry) {
         if (entry.name === s.username) return; // already notified locally via the log watcher
+        if (entry.silent) return; // a leaderboard/log correction, not a live event worth announcing
         if (entry.type === 'died') {
           notify('Death Announcement', entry.name + ' died at level ' + (entry.level || '?') + '.', 'death');
         } else if (entry.type === 'ding') {
@@ -818,6 +1008,19 @@ ipcMain.handle('save-settings', function (event, newSettings) {
   return merged;
 });
 
+ipcMain.handle('send-chat', function (event, text) {
+  if (!realtimeSocket || realtimeSocket.readyState !== WebSocket.OPEN) return { ok: false, error: 'Not connected' };
+  try {
+    // The worker validates this against its own palette, so an unknown
+    // value just falls back to the default rather than being trusted.
+    var color = loadSettings().chatColor || null;
+    realtimeSocket.send(JSON.stringify({ type: 'chat', text: String(text || '').slice(0, 500), color: color }));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 ipcMain.handle('show-notification', function (event, payload) {
   notify((payload && payload.title) || 'EQ Legends Randomizer', (payload && payload.body) || '', (payload && payload.kind) || 'info');
 });
@@ -836,10 +1039,15 @@ ipcMain.handle('character-rolled', function (event, payload) {
   // previous (now-resolved) character so a death before the first
   // real level-up line doesn't misreport an old level. Also (re)arm the
   // death/ding guard so this new character's first death gets reported.
-  watchState.currentLevel = null;
+  // A brand-new character starts at 1 — not "unknown", which previously
+  // let a stale value from the last character survive.
+  watchState.currentLevel = 1;
   watchState.characterActive = true;
   watchState.characterD4 = !!(payload && payload.d4);
-  sendToRenderer('level-update', null);
+  watchState.characterClasses = (payload && payload.classes) || null;
+  watchState.characterRolledAt = (payload && payload.rolledAt) || new Date().toISOString();
+  watchState.lastMismatchNotifiedAt = 0;
+  sendToRenderer('level-update', 1);
 });
 
 ipcMain.handle('character-locked-sync', function (event, payload) {
@@ -849,6 +1057,12 @@ ipcMain.handle('character-locked-sync', function (event, payload) {
   // from log history.
   watchState.characterActive = true;
   watchState.characterD4 = !!(payload && payload.d4);
+  watchState.characterClasses = (payload && payload.classes) || null;
+  watchState.characterRolledAt = (payload && payload.rolledAt) || null;
+  // The app may have been closed while they played — give the log
+  // watcher a moment to recover the current level from history, then
+  // push a catch-up sync so the leaderboard reflects reality.
+  setTimeout(function () { syncSharedState(true); }, 8000);
 });
 
 ipcMain.handle('character-unlocked', function () {
@@ -858,6 +1072,12 @@ ipcMain.handle('character-unlocked', function () {
   // line for the now-resolved character from firing another notification.
   watchState.characterActive = false;
   watchState.characterD4 = false;
+  watchState.characterClasses = null;
+  watchState.characterRolledAt = null;
+  // Clear the level too — a resolved character's level must not carry
+  // over to whatever gets rolled next.
+  watchState.currentLevel = null;
+  sendToRenderer('level-update', null);
 });
 
 ipcMain.handle('group-changed', function () {
@@ -918,10 +1138,183 @@ ipcMain.handle('install-update', function () {
 
 // ---- Window & tray ----
 
+var DEFAULT_WINDOW = { width: 1150, height: 820 };
+
+// Returns saved window bounds only if they'd still be visible. A window
+// restored onto a monitor that's since been unplugged (or a resolution
+// that shrank) would otherwise open off-screen and look like the app
+// failed to launch, with no obvious way to recover it.
+function resolveSavedBounds() {
+  var s = loadSettings();
+  var b = s.windowBounds;
+  if (!b || typeof b.width !== 'number' || typeof b.height !== 'number') return null;
+
+  var result = {
+    width: Math.max(1050, Math.round(b.width)),
+    height: Math.max(600, Math.round(b.height))
+  };
+
+  if (typeof b.x === 'number' && typeof b.y === 'number') {
+    // Keep the saved position only if a meaningful part of the window
+    // would land inside some currently-connected display.
+    var displays = screen.getAllDisplays();
+    var visible = displays.some(function (d) {
+      var wa = d.workArea;
+      var overlapX = Math.min(b.x + result.width, wa.x + wa.width) - Math.max(b.x, wa.x);
+      var overlapY = Math.min(b.y + result.height, wa.y + wa.height) - Math.max(b.y, wa.y);
+      return overlapX > 120 && overlapY > 60;
+    });
+    if (visible) {
+      result.x = Math.round(b.x);
+      result.y = Math.round(b.y);
+    }
+  }
+  return result;
+}
+
+var saveBoundsTimer = null;
+function scheduleSaveBounds() {
+  // Dragging/resizing fires continuously — debounce so we're not
+  // rewriting the settings file dozens of times per second.
+  clearTimeout(saveBoundsTimer);
+  saveBoundsTimer = setTimeout(saveWindowBounds, 500);
+}
+
+function saveWindowBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    var isMax = mainWindow.isMaximized();
+    // getNormalBounds() gives the pre-maximize size, so un-maximizing
+    // later restores something sensible rather than a full-screen box.
+    var b = mainWindow.getNormalBounds ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+    var merged = Object.assign({}, loadSettings(), {
+      windowBounds: { x: b.x, y: b.y, width: b.width, height: b.height },
+      windowMaximized: isMax
+    });
+    saveSettingsToDisk(merged);
+  } catch (e) { /* non-critical */ }
+}
+
+// ---- Chat overlay window ----
+//
+// Deliberately the opposite of the notification overlay: that one is
+// unfocusable and click-through so it never steals input from the game.
+// This one must accept typing, so it takes focus when clicked. Kept
+// frameless + transparent with a custom drag bar so it reads as an
+// overlay rather than a second app window.
+function createChatOverlay() {
+  if (chatOverlayWindow && !chatOverlayWindow.isDestroyed()) return chatOverlayWindow;
+
+  var s = loadSettings();
+  var b = s.chatOverlayBounds || {};
+  var wa = screen.getPrimaryDisplay().workArea;
+
+  var width = Math.max(280, Math.round(b.width || 380));
+  var height = Math.max(200, Math.round(b.height || 420));
+  var x = typeof b.x === 'number' ? b.x : (wa.x + wa.width - width - 30);
+  var y = typeof b.y === 'number' ? b.y : (wa.y + 80);
+
+  // Guard against a saved position on a monitor that's since gone away.
+  var onScreen = screen.getAllDisplays().some(function (d) {
+    var a = d.workArea;
+    return (Math.min(x + width, a.x + a.width) - Math.max(x, a.x)) > 100 &&
+           (Math.min(y + height, a.y + a.height) - Math.max(y, a.y)) > 50;
+  });
+  if (!onScreen) { x = wa.x + wa.width - width - 30; y = wa.y + 80; }
+
+  chatOverlayWindow = new BrowserWindow({
+    width: width, height: height, x: x, y: y,
+    minWidth: 260, minHeight: 180,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: true,
+    movable: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'renderer', 'chat-overlay-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  // 'screen-saver' is the highest level Electron exposes on Windows —
+  // needed to sit above a game running borderless-fullscreen.
+  chatOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  var savedOpacity = typeof s.chatOverlayOpacity === 'number' ? s.chatOverlayOpacity : 0.9;
+  chatOverlayWindow.setOpacity(Math.max(0.2, Math.min(1, savedOpacity)));
+  chatOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  chatOverlayWindow.loadFile(path.join(__dirname, 'renderer', 'chat-overlay.html'));
+
+  chatOverlayWindow.once('ready-to-show', function () {
+    chatOverlayWindow.show();
+    // Seed it with what's already happened so it isn't blank.
+    chatOverlayWindow.webContents.send('chat-history', {
+      messages: chatHistory,
+      users: lastPresence,
+      username: loadSettings().username || '',
+      chatColor: loadSettings().chatColor || '#2A2016'
+    });
+  });
+
+  var saveOverlayTimer = null;
+  function saveOverlayBounds() {
+    if (!chatOverlayWindow || chatOverlayWindow.isDestroyed()) return;
+    try {
+      var nb = chatOverlayWindow.getBounds();
+      saveSettingsToDisk(Object.assign({}, loadSettings(), { chatOverlayBounds: nb }));
+    } catch (e) { /* non-critical */ }
+  }
+  function scheduleOverlaySave() {
+    clearTimeout(saveOverlayTimer);
+    saveOverlayTimer = setTimeout(saveOverlayBounds, 500);
+  }
+  chatOverlayWindow.on('resize', scheduleOverlaySave);
+  chatOverlayWindow.on('move', scheduleOverlaySave);
+  chatOverlayWindow.on('close', function () { clearTimeout(saveOverlayTimer); saveOverlayBounds(); });
+  chatOverlayWindow.on('closed', function () { chatOverlayWindow = null; sendToRenderer('chat-overlay-state', false); });
+
+  return chatOverlayWindow;
+}
+
+function closeChatOverlay() {
+  if (chatOverlayWindow && !chatOverlayWindow.isDestroyed()) chatOverlayWindow.close();
+  chatOverlayWindow = null;
+}
+
+ipcMain.handle('toggle-chat-overlay', function () {
+  var open = !!(chatOverlayWindow && !chatOverlayWindow.isDestroyed());
+  if (open) { closeChatOverlay(); return { open: false }; }
+  createChatOverlay();
+  return { open: true };
+});
+
+ipcMain.handle('close-chat-overlay', function () {
+  closeChatOverlay();
+  sendToRenderer('chat-overlay-state', false);
+  return { open: false };
+});
+
+ipcMain.handle('set-chat-overlay-opacity', function (event, value) {
+  // Clamped so nobody can slide the overlay to fully invisible and then
+  // be unable to find it again.
+  var v = Math.max(0.2, Math.min(1, Number(value) || 1));
+  saveSettingsToDisk(Object.assign({}, loadSettings(), { chatOverlayOpacity: v }));
+  if (chatOverlayWindow && !chatOverlayWindow.isDestroyed()) chatOverlayWindow.setOpacity(v);
+  return { opacity: v };
+});
+
+ipcMain.handle('get-chat-overlay-state', function () {
+  return { open: !!(chatOverlayWindow && !chatOverlayWindow.isDestroyed()) };
+});
+
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1150,
-    height: 820,
+  var saved = resolveSavedBounds();
+  var opts = {
+    width: (saved && saved.width) || DEFAULT_WINDOW.width,
+    height: (saved && saved.height) || DEFAULT_WINDOW.height,
     minWidth: 1050,
     minHeight: 600,
     title: 'EQ Legends Randomizer v' + app.getVersion(),
@@ -931,7 +1324,17 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false
     }
-  });
+  };
+  if (saved && typeof saved.x === 'number') { opts.x = saved.x; opts.y = saved.y; }
+
+  mainWindow = new BrowserWindow(opts);
+
+  if (loadSettings().windowMaximized) mainWindow.maximize();
+
+  mainWindow.on('resize', scheduleSaveBounds);
+  mainWindow.on('move', scheduleSaveBounds);
+  mainWindow.on('maximize', scheduleSaveBounds);
+  mainWindow.on('unmaximize', scheduleSaveBounds);
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
@@ -942,6 +1345,8 @@ function createWindow() {
   });
 
   mainWindow.on('close', function (e) {
+    clearTimeout(saveBoundsTimer);
+    saveWindowBounds(); // capture the final size/position before it's gone
     if (app.isQuitting) return; // real quit via tray menu / setting — let it proceed
 
     var s = loadSettings();
@@ -1019,6 +1424,7 @@ app.on('window-all-closed', function () {
 app.on('before-quit', function () {
   app.isQuitting = true;
   disconnectRealtime();
+  closeChatOverlay();
 });
 
 } // end runApp()
