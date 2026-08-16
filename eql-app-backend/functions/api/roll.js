@@ -75,6 +75,9 @@ export async function onRequestPost(context) {
       ssf: ssf,
       server: server,
       d4: d4,
+      // Recorded on the character itself so a cleared log can be
+      // reconstructed later without losing the run's start time.
+      rolledAt: new Date().toISOString(),
       locked: true
     };
   } else {
@@ -93,6 +96,9 @@ export async function onRequestPost(context) {
       ssf: ssf,
       server: server,
       d4: d4,
+      // Recorded on the character itself so a cleared log can be
+      // reconstructed later without losing the run's start time.
+      rolledAt: new Date().toISOString(),
       locked: true
     };
   }

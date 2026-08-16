@@ -1,6 +1,6 @@
 {
   "name": "eql-legends-randomizer",
-  "version": "1.0.58",
+  "version": "1.0.69",
   "description": "EQ Legends Randomizer - character randomizer with log-file death/level tracking",
   "main": "main.js",
   "author": "EQ Legends Randomizer",
@@ -39,8 +39,8 @@
       "icon": "build/icon.ico"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     }

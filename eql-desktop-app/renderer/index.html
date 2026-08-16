@@ -58,6 +58,11 @@
     box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 12px 26px -16px rgba(42,32,22,0.4);
     padding: 22px 24px; margin-bottom: 16px;
   }
+  #character-card { position: relative; }
+  .character-card-badges {
+    position: absolute; top: 12px; right: 14px;
+    display: flex; align-items: center; gap: 6px;
+  }
 
   .card h3 {
     font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--moss);
@@ -96,6 +101,11 @@
   .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-soft); cursor: pointer; }
   .toggle input { accent-color: var(--ember); width: 14px; height: 14px; cursor: pointer; }
   .hint { text-align: center; font-size: 11px; color: var(--ink-soft); font-style: italic; margin: 4px 0 0; }
+  .hint-left { text-align: left; }
+  /* Pulls a hint up tight under the field it describes — .field has a
+     12px bottom margin, which otherwise leaves the hint floating in a
+     gap, visually detached from the input it belongs to. */
+  .hint-under-field { margin: -8px 0 12px; }
   .hint.active { color: var(--ember); font-style: normal; }
 
   .actions { display: flex; justify-content: center; gap: 10px; margin: 18px 0; flex-wrap: wrap; }
@@ -163,11 +173,12 @@
   .empty-text { font-size: 12px; color: var(--ink-soft); font-style: italic; }
 
   .lb-filters {
-    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px;
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px;
     padding: 10px 12px; margin-bottom: 12px;
     background: rgba(122,90,52,0.08); border-radius: 6px;
   }
-  .lb-filters .field { min-width: 140px; flex: 1 1 140px; }
+  .lb-filters .field { min-width: 120px; flex: 1 1 120px; }
+  .lb-filters .lb-filter-status-field { min-width: 90px; flex: 0 1 90px; }
   .lb-filter-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; padding-bottom: 9px; }
 
   .list-scroll { max-height: 650px; overflow-y: auto; }

@@ -19,7 +19,7 @@
     fellBack: false, hardcore: false, hasPath: false, levelingPath: null,
     manualBuild: false, hasSSF: false,
     locked: false, rolling: false, resolving: false,
-    hardcoreMode: true, pathToggle: false, ssfToggle: false,
+    hardcoreMode: true, pathToggle: false, ssfToggle: false, d4Toggle: false,
 
     manualMode: false,
     manualRace: '', manualPrimary: '', manualSecondary: '', manualTertiary: '',
@@ -29,7 +29,7 @@
 
     log: [], leaderboard: [], leaderboardResetAt: null,
     lbTab: 'randomized', // 'randomized' | 'manual'
-    lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false,
+    lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false, lbFilterD4: false,
     logTab: 'randomized', // 'randomized' | 'manual'
 
     settingsLogFilePath: '', settingsCharacterName: '',
@@ -38,6 +38,7 @@
     soundsEnabled: true,
     notificationsEnabled: true,
     notificationVolume: 1.0,
+    notificationPosition: 'top-middle',
     groupName: '', groupInput: '',
     appVersion: '',
     updateStatus: { status: 'idle', version: null, progress: 0, errorMessage: null },
@@ -60,6 +61,18 @@
     "Barbarian", "Dark Elf", "Dwarf", "Erudite", "Froglok",
     "Gnome", "Half-Elf", "Halfling", "High Elf", "Human",
     "Iksar", "Kerran", "Ogre", "Troll", "Wood Elf"
+  ];
+
+  var NOTIFICATION_POSITIONS = [
+    { value: 'top-left', label: 'Top-Left' },
+    { value: 'top-middle', label: 'Top-Middle' },
+    { value: 'top-right', label: 'Top-Right' },
+    { value: 'middle-left', label: 'Middle-Left' },
+    { value: 'center', label: 'Center' },
+    { value: 'middle-right', label: 'Middle-Right' },
+    { value: 'bottom-left', label: 'Bottom-Left' },
+    { value: 'bottom-middle', label: 'Bottom-Middle' },
+    { value: 'bottom-right', label: 'Bottom-Right' }
   ];
 
   var CLASSES = [
@@ -103,6 +116,15 @@
       '<text x="20" y="12" font-size="13" font-weight="900" fill="#C0392B" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif">?</text>' +
     '</svg>';
 
+  // A small triangular die icon (the classic tetrahedron/d4 shape) with
+  // the "4" set inside it, so a D4-flagged character is visually
+  // distinct rather than just another text badge.
+  var D4_ICON_SVG =
+    '<svg width="22" height="22" viewBox="0 0 24 24" style="vertical-align:-6px;">' +
+      '<polygon points="12,2 22.5,21 1.5,21" fill="#8C3B2A" stroke="#4A2015" stroke-width="1.2" stroke-linejoin="round"/>' +
+      '<text x="12" y="18" font-size="13" font-weight="900" fill="#F5E6C8" text-anchor="middle" font-family="Arial, sans-serif">4</text>' +
+    '</svg>';
+
   var CLASS_ABBR = {
     'Enchanter': 'ENC', 'Magician': 'MAG', 'Necromancer': 'NEC', 'Wizard': 'WIZ',
     'Bard': 'BRD', 'Beastlord': 'BST', 'Paladin': 'PAL', 'Ranger': 'RNG',
@@ -144,7 +166,8 @@
   var MODE_DESCRIPTIONS = {
     hardcore: wrapTooltipText('This is a perma-death mode!  Create a new character with the race and classes that were given to you.  If you die, immediately log out and delete the character!'),
     ssf: wrapTooltipText('This is a Solo-Self Found mode.  You are not allowed to trade with other players, and no group with other players.  No outside help at all.'),
-    path: wrapTooltipText('This will generate a random leveling path for your character to follow.  You are expected to only hunt, and use items from the zones given to you.  An extra difficulty if you so desire!')
+    path: wrapTooltipText('This will generate a random leveling path for your character to follow.  You are expected to only hunt, and use items from the zones given to you.  An extra difficulty if you so desire!'),
+    d4: wrapTooltipText('Difficulty 4 Only — the highest of the 4 difficulty tiers. Restrict yourself to Difficulty 4 content only for an extra challenge.')
   };
 
   function formatStamp(date) {
@@ -205,7 +228,7 @@
           level: 1, // no levelup entry yet — assume level 1 until we see one
           race: e.race, primary: e.primary, secondary: e.secondary, tertiary: e.tertiary,
           hardcore: !!e.hardcore, pathMode: !!e.pathMode, manualBuild: !!e.manualBuild, ssf: !!e.ssf,
-          path: e.path || null, server: e.server || null,
+          path: e.path || null, server: e.server || null, d4: !!e.d4,
           rollTime: e.time
         };
       } else if (e.type === 'levelup') {
@@ -218,7 +241,7 @@
           race: e.race, primary: e.primary, secondary: e.secondary, tertiary: e.tertiary,
           hardcore: !!e.hardcore, pathMode: !!e.pathMode,
           killedBy: e.killedBy || null, manual: !!e.manual, manualBuild: !!e.manualBuild,
-          ssf: !!e.ssf, path: e.path || null, server: e.server || null
+          ssf: !!e.ssf, path: e.path || null, server: e.server || null, d4: !!e.d4
         });
         byName[n].lastRollTime = null;
         byName[n].current = null; // resolved — no longer in progress
@@ -243,7 +266,7 @@
           name: name, level: run.level, duration: run.duration, race: run.race,
           primary: run.primary, secondary: run.secondary, tertiary: run.tertiary,
           type: run.type, pathMode: run.pathMode, killedBy: run.killedBy, manual: run.manual,
-          manualBuild: run.manualBuild, ssf: run.ssf, path: run.path, server: run.server,
+          manualBuild: run.manualBuild, ssf: run.ssf, path: run.path, server: run.server, d4: run.d4,
           status: run.type === 'died' ? 'dead' : 'alive'
         });
       });
@@ -256,7 +279,7 @@
           name: name, level: current.level, duration: elapsed, race: current.race,
           primary: current.primary, secondary: current.secondary, tertiary: current.tertiary,
           type: 'inprogress', pathMode: current.pathMode, killedBy: null, manual: false,
-          manualBuild: current.manualBuild, ssf: current.ssf, path: current.path, server: current.server,
+          manualBuild: current.manualBuild, ssf: current.ssf, path: current.path, server: current.server, d4: current.d4,
           status: 'alive'
         });
       }
@@ -298,6 +321,7 @@
       state.levelingPath = character.path || null;
       state.manualBuild = !!character.manualBuild;
       state.hasSSF = !!character.ssf;
+      state.hasD4 = !!character.d4;
       state.locked = true;
     } else {
       state.primary = null;
@@ -310,6 +334,7 @@
       state.levelingPath = null;
       state.manualBuild = false;
       state.hasSSF = false;
+      state.hasD4 = false;
       state.locked = false;
     }
   }
@@ -319,7 +344,8 @@
   function renderLogRow(entry) {
     var stamp = formatStamp(new Date(entry.time));
     var serverTag = entry.server ? ' <span style="opacity:0.7;">[' + escapeHtml(entry.server) + ']</span>' : '';
-    var who = escapeHtml(entry.name || 'Unknown') + serverTag + (entry.ssf ? ' <span class="ssf-tag">SSF</span>' : '');
+    var d4Tag = entry.d4 ? ' <span title="Difficulty 4 Only">' + D4_ICON_SVG + '</span>' : '';
+    var who = escapeHtml(entry.name || 'Unknown') + serverTag + d4Tag + (entry.ssf ? ' <span class="ssf-tag">SSF</span>' : '');
     var pathTag = entry.pathMode ? ' <span class="eql-path-icon" title="' + escapeHtml(formatPathTooltip(entry.path)) + '">' + PATH_ICON_SVG + '</span>' : '';
     var manualTag = entry.manual ? ' <span style="font-size:10px;font-style:italic;opacity:0.65">(manual)</span>' : '';
     var killedByTag = (entry.type === 'died' && entry.killedBy) ? ' <span class="killed-by">— killed by ' + escapeHtml(entry.killedBy) + '</span>' : '';
@@ -358,6 +384,7 @@
       : ' <span class="status-tag status-alive">ALIVE</span>';
     var killedByTag = (row.type === 'died' && row.killedBy) ? ' <span class="killed-by">· killed by ' + escapeHtml(row.killedBy) + '</span>' : '';
     var serverTag = row.server ? ' <span style="opacity:0.7;">[' + escapeHtml(row.server) + ']</span>' : '';
+    var d4Tag = row.d4 ? ' <span title="Difficulty 4 Only">' + D4_ICON_SVG + '</span>' : '';
     var classes = (row.secondary && row.tertiary)
       ? (abbrClass(row.primary) + ' / ' + abbrClass(row.secondary) + ' / ' + abbrClass(row.tertiary))
       : abbrClass(row.primary);
@@ -367,7 +394,7 @@
         '<span class="lb-rank">#' + rank + '</span>' +
         '<div class="lb-main">' +
           '<div class="lb-line1">' +
-            '<span class="lb-name">' + escapeHtml(row.name) + ' <span style="font-weight:400;font-style:italic;color:var(--ink-soft)">(' + escapeHtml(row.race) + ')</span>' + serverTag + ssfTag + statusTag + (medal ? ' ' + medal : '') + '</span>' +
+            '<span class="lb-name">' + escapeHtml(row.name) + ' <span style="font-weight:400;font-style:italic;color:var(--ink-soft)">(' + escapeHtml(row.race) + ')</span>' + serverTag + d4Tag + ssfTag + statusTag + (medal ? ' ' + medal : '') + '</span>' +
             '<span class="' + levelClass + '">' + icon + pathIcon + 'Lvl ' + row.level + manualTag + '</span>' +
           '</div>' +
           '<div class="lb-build">' + escapeHtml(classes) + ' · ' + formatDuration(row.duration) + killedByTag + '</div>' +
@@ -495,7 +522,14 @@
   function renderRandomizerView() {
     var html = '';
 
+    var cardBadges = state.locked ? (
+      (state.hasPath ? '<span class="eql-path-icon" title="' + escapeHtml(formatPathTooltip(state.levelingPath)) + '">' + PATH_ICON_SVG + '</span>' : '') +
+      (state.hasSSF ? '<span class="ssf-tag" title="Solo Self Found">SSF</span>' : '') +
+      (state.hasD4 ? '<span title="Difficulty 4 Only">' + D4_ICON_SVG + '</span>' : '')
+    ) : '';
+
     html += '<div class="card" id="character-card">' +
+      (cardBadges ? '<div class="character-card-badges">' + cardBadges + '</div>' : '') +
       '<p class="result-label page-title">Your Character</p>' +
       '<p class="primary-line">' + (state.primary || '???') + '</p>' +
       '<p class="arrow">&#8595;</p>' +
@@ -612,12 +646,14 @@
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.hardcore) + '"><input type="checkbox" id="in-hardcore"' + (state.hardcoreMode ? ' checked' : '') + ' /> Hardcore</label>' +
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.ssf) + '"><input type="checkbox" id="in-ssf"' + (state.ssfToggle ? ' checked' : '') + ' /> SSF</label>' +
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.path) + '"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.d4) + '"><input type="checkbox" id="in-d4"' + (state.d4Toggle ? ' checked' : '') + ' /> D4 Only</label>' +
       '</div>' +
       '<p class="hint">* Only Hardcore characters are eligible for the leaderboard</p>';
     } else if (!state.locked && state.manualMode) {
       html += '<div class="toggles-row">' +
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.ssf) + '"><input type="checkbox" id="in-ssf"' + (state.ssfToggle ? ' checked' : '') + ' /> SSF</label>' +
         '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.path) + '"><input type="checkbox" id="in-path"' + (state.pathToggle ? ' checked' : '') + ' /> Random Leveling Path</label>' +
+        '<label class="toggle" title="' + escapeHtml(MODE_DESCRIPTIONS.d4) + '"><input type="checkbox" id="in-d4"' + (state.d4Toggle ? ' checked' : '') + ' /> D4 Only</label>' +
       '</div>';
     } else if (state.hasPath && state.levelingPath) {
       html += '<div class="card"><h3>Leveling Path</h3><ul class="path-list">' +
@@ -643,7 +679,7 @@
       '<p class="hint" style="margin:-6px 0 14px;">Showing: ' + (state.groupName ? escapeHtml(state.groupName) : 'Local') + '</p>';
     var visibleLb = state.leaderboard.filter(function (row) { return !!row.manualBuild === (state.lbTab === 'manual'); });
 
-    var filtersActive = !!(state.lbFilterClass || state.lbFilterStatus || state.lbFilterSSF || state.lbFilterPath);
+    var filtersActive = !!(state.lbFilterClass || state.lbFilterStatus || state.lbFilterSSF || state.lbFilterPath || state.lbFilterD4);
     if (state.lbFilterClass) {
       visibleLb = visibleLb.filter(function (row) { return row.primary === state.lbFilterClass; });
     }
@@ -655,6 +691,9 @@
     }
     if (state.lbFilterPath) {
       visibleLb = visibleLb.filter(function (row) { return !!row.pathMode; });
+    }
+    if (state.lbFilterD4) {
+      visibleLb = visibleLb.filter(function (row) { return !!row.d4; });
     }
 
     html +=
@@ -670,7 +709,7 @@
             CLASSES.map(function (c) { return '<option value="' + escapeHtml(c) + '"' + (state.lbFilterClass === c ? ' selected' : '') + '>' + escapeHtml(c) + '</option>'; }).join('') +
           '</select>' +
         '</div>' +
-        '<div class="field" style="margin-bottom:0;">' +
+        '<div class="field lb-filter-status-field" style="margin-bottom:0;">' +
           '<label class="field-label">Status</label>' +
           '<select id="in-lb-filter-status">' +
             '<option value=""' + (!state.lbFilterStatus ? ' selected' : '') + '>Any</option>' +
@@ -680,6 +719,7 @@
         '</div>' +
         '<label class="toggle lb-filter-toggle"><input type="checkbox" id="in-lb-filter-ssf"' + (state.lbFilterSSF ? ' checked' : '') + ' /> SSF Only</label>' +
         '<label class="toggle lb-filter-toggle"><input type="checkbox" id="in-lb-filter-path"' + (state.lbFilterPath ? ' checked' : '') + ' /> Leveling Path Only</label>' +
+        '<label class="toggle lb-filter-toggle"><input type="checkbox" id="in-lb-filter-d4"' + (state.lbFilterD4 ? ' checked' : '') + ' /> D4 Only</label>' +
       '</div>' +
       '<div class="list-scroll">' +
       (visibleLb.length === 0
@@ -753,7 +793,7 @@
     }
     if (s.status === 'downloaded') {
       return '<p class="note warn" style="text-align:left;margin:0 0 10px;">Version ' + escapeHtml(s.version) + ' is downloaded and ready.</p>' +
-        '<button class="btn btn-ding btn-full" id="btn-install-update">Restart && Install Now</button>';
+        '<button class="btn btn-ding btn-full" id="btn-install-update">Restart & Install Now</button>';
     }
     if (s.status === 'error') {
       return '<p class="error-text">Could not check for updates: ' + escapeHtml(s.errorMessage || 'Unknown error') + '</p>' +
@@ -779,14 +819,14 @@
           '<label class="field-label">Your In-Game Character Name</label>' +
           '<input type="text" id="in-char-name" value="' + escapeHtml(state.settingsCharacterName) + '" placeholder="e.g. Vithe" />' +
         '</div>' +
-        '<p class="hint">This is auto-suggested from the log file name, but double-check it matches your character\'s exact name.</p>' +
+        '<p class="hint hint-left hint-under-field">This is auto-suggested from the log file name, but double-check it matches your character\'s exact name.</p>' +
         '<div class="field">' +
           '<label class="field-label">Group Name</label>' +
           '<input type="text" id="in-group-name" value="' + escapeHtml(state.groupInput) + '" placeholder="Leave blank for local only"' + (state.locked ? ' disabled' : '') + ' />' +
         '</div>' +
         (state.locked
-          ? '<p class="hint" style="color:var(--ember);">You have an active character right now — resolve it first (die, ding, or Roll Again) before changing your group, so its outcome doesn\'t get split across two different groups\' logs.</p>'
-          : '<p class="hint">Type any name you\'d like — anyone who enters the exact same Group Name (not case-sensitive) will share leaderboards, Adventure Log entries, and notifications with you. Leave this blank and everything stays local to just you — nobody else will see your leaderboard, log, or notifications, and you won\'t see anyone else\'s.</p>') +
+          ? '<p class="hint hint-left hint-under-field" style="color:var(--ember);">You have an active character right now — resolve it first (die, ding, or Roll Again) before changing your group, so its outcome doesn\'t get split across two different groups\' logs.</p>'
+          : '<p class="hint hint-left hint-under-field">Type any name you want.  Anyone who enters the exact same group name (not case-sensitive) will share Leaderboard, Adventure Log, and Notifications.  Leaving this blank will keep everything local to you.</p>') +
         '<button class="btn btn-primary btn-full" id="btn-save-settings" style="margin-top:10px;">' + (state.settingsSaved ? 'Saved ✓' : 'Save Settings') + '</button>' +
         '<div style="text-align:center;margin-top:12px;">' +
           (state.watching
@@ -808,14 +848,22 @@
             '<option value="quit"' + (state.closeBehavior === 'quit' ? ' selected' : '') + '>Quit the app completely</option>' +
           '</select>' +
         '</div>' +
-        '<p class="hint">If you choose "Quit," the app stops watching your log file entirely until you reopen it — you\'ll need to reopen the app to get death/level notifications again.</p>' +
+        '<p class="hint hint-left">If you choose "Quit" the app stops monitoring your log file and you\'ll need to reopen the app.</p>' +
         '<label class="toggle" style="margin-top:12px;"><input type="checkbox" id="in-notifications-enabled"' + (state.notificationsEnabled ? ' checked' : '') + ' /> Notifications</label>' +
-        '<p class="hint">Turn off to disable all death/ding/level-up notifications entirely — nothing will show, for you or about anyone else in your group.</p>' +
+        '<p class="hint hint-left">Turn off to disable all notifications.</p>' +
         '<label class="toggle" style="margin-top:6px;"><input type="checkbox" id="in-sounds-enabled"' + (state.soundsEnabled ? ' checked' : '') + (state.notificationsEnabled ? '' : ' disabled') + ' /> Notification Sounds</label>' +
-        '<p class="hint">Turn off to keep the visual toasts but silence the death/ding/level-up sound effects.' + (state.notificationsEnabled ? '' : ' (Notifications are off, so this has no effect right now.)') + '</p>' +
+        '<p class="hint hint-left">Turn this off to keep the visual toasts, but disable the sounds they make.' + (state.notificationsEnabled ? '' : ' (Notifications are off, so this has no effect right now.)') + '</p>' +
         '<div class="field" style="margin-top:6px;">' +
           '<label class="field-label">Notification Volume — <span id="volume-pct-label">' + Math.round(state.notificationVolume * 100) + '%</span></label>' +
           '<input type="range" id="in-notification-volume" min="0" max="100" value="' + Math.round(state.notificationVolume * 100) + '"' + ((state.notificationsEnabled && state.soundsEnabled) ? '' : ' disabled') + ' style="width:100%;" />' +
+        '</div>' +
+        '<div class="field">' +
+          '<label class="field-label">Notification Position</label>' +
+          '<select id="in-notification-position"' + (state.notificationsEnabled ? '' : ' disabled') + '>' +
+            NOTIFICATION_POSITIONS.map(function (p) {
+              return '<option value="' + p.value + '"' + (state.notificationPosition === p.value ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
+            }).join('') +
+          '</select>' +
         '</div>' +
       '</div>'
     );
@@ -881,6 +929,8 @@
     if (pathCheckbox) pathCheckbox.addEventListener('change', function (e) { state.pathToggle = e.target.checked; });
     var ssfCheckbox = document.getElementById('in-ssf');
     if (ssfCheckbox) ssfCheckbox.addEventListener('change', function (e) { state.ssfToggle = e.target.checked; });
+    var d4Checkbox = document.getElementById('in-d4');
+    if (d4Checkbox) d4Checkbox.addEventListener('change', function (e) { state.d4Toggle = e.target.checked; });
 
     var diedBtn = document.getElementById('btn-died');
     if (diedBtn) diedBtn.addEventListener('click', function () {
@@ -960,6 +1010,8 @@
     if (lbFilterSSFCheckbox) lbFilterSSFCheckbox.addEventListener('change', function (e) { state.lbFilterSSF = e.target.checked; render(); });
     var lbFilterPathCheckbox = document.getElementById('in-lb-filter-path');
     if (lbFilterPathCheckbox) lbFilterPathCheckbox.addEventListener('change', function (e) { state.lbFilterPath = e.target.checked; render(); });
+    var lbFilterD4Checkbox = document.getElementById('in-lb-filter-d4');
+    if (lbFilterD4Checkbox) lbFilterD4Checkbox.addEventListener('change', function (e) { state.lbFilterD4 = e.target.checked; render(); });
 
     var logTabRandomized = document.getElementById('tab-log-randomized');
     if (logTabRandomized) logTabRandomized.addEventListener('click', function () { state.logTab = 'randomized'; render(); });
@@ -1010,6 +1062,12 @@
         await window.eqlApp.saveSettings({ notificationVolume: state.notificationVolume });
       });
     }
+
+    var positionSelect = document.getElementById('in-notification-position');
+    if (positionSelect) positionSelect.addEventListener('change', async function (e) {
+      state.notificationPosition = e.target.value;
+      await window.eqlApp.saveSettings({ notificationPosition: state.notificationPosition });
+    });
 
     var checkUpdateBtn = document.getElementById('btn-check-update');
     if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', function () {
@@ -1144,7 +1202,7 @@
   }
 
   async function finishRoll() {
-    var res = await apiRequest('/api/roll', { method: 'POST', body: { hardcore: !!state.hardcoreMode, pathMode: !!state.pathToggle, ssf: !!state.ssfToggle, server: state.serverName } });
+    var res = await apiRequest('/api/roll', { method: 'POST', body: { hardcore: !!state.hardcoreMode, pathMode: !!state.pathToggle, ssf: !!state.ssfToggle, d4: !!state.d4Toggle, server: state.serverName } });
     state.rolling = false;
     if (!res.ok) {
       alert((res.data && res.data.error) || 'Could not randomize right now.');
@@ -1154,7 +1212,7 @@
     }
     applyCharacterFromServer(res.data.character);
     render();
-    window.eqlApp.notifyCharacterRolled();
+    window.eqlApp.notifyCharacterRolled({ d4: state.hasD4 });
     await refreshSharedData();
     render();
   }
@@ -1171,6 +1229,7 @@
       manualBuild: true,
       pathMode: !!state.pathToggle,
       ssf: !!state.ssfToggle,
+      d4: !!state.d4Toggle,
       race: state.manualRace,
       primary: state.manualPrimary,
       secondary: state.manualSecondary,
@@ -1187,7 +1246,7 @@
     state.manualMode = false;
     state.manualRace = ''; state.manualPrimary = ''; state.manualSecondary = ''; state.manualTertiary = '';
     render();
-    window.eqlApp.notifyCharacterRolled();
+    window.eqlApp.notifyCharacterRolled({ d4: state.hasD4 });
     await refreshSharedData();
     render();
   }
@@ -1415,6 +1474,7 @@
     state.soundsEnabled = settings.soundsEnabled !== false;
     state.notificationsEnabled = settings.notificationsEnabled !== false;
     state.notificationVolume = typeof settings.notificationVolume === 'number' ? settings.notificationVolume : 1.0;
+    state.notificationPosition = settings.notificationPosition || 'top-middle';
 
     state.appVersion = await window.eqlApp.getAppVersion();
     state.updateStatus = await window.eqlApp.getUpdateStatus();
@@ -1427,7 +1487,7 @@
         state.groupName = res.data.group || '';
         state.groupInput = res.data.group || '';
         if (state.locked) {
-          window.eqlApp.notifyCharacterLockedSync();
+          window.eqlApp.notifyCharacterLockedSync({ d4: state.hasD4 });
         }
         await refreshSharedData();
         var status = await window.eqlApp.getWatchStatus();

@@ -1,6 +1,7 @@
 import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser } from '../_lib/auth-users.js';
 import { logKeyFor } from '../_lib/groups.js';
+import { ensureRollEntry } from '../_lib/ensure-roll-entry.js';
 import { broadcastEntry } from '../_lib/broadcast.js';
 
 function json(body, status) {
@@ -69,6 +70,10 @@ export async function onRequestPost(context) {
 
   const logRaw = await env.EQL_KV.get(logKeyFor(user));
   const log = logRaw ? JSON.parse(logRaw) : [];
+  // If the log was cleared while this character was active, its roll
+  // entry is gone — restore it so the character reappears on the
+  // leaderboard/log with its run duration intact.
+  ensureRollEntry(log, username, character);
   log.push(entry);
   await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
   context.waitUntil(broadcastEntry(env, username, user.group, entry));

@@ -102,6 +102,9 @@ function loadSettings() {
   if (typeof settings.notificationVolume !== 'number') {
     settings.notificationVolume = 1.0; // 100% — a multiplier on top of each sound's own tuned base volume
   }
+  if (!settings.notificationPosition) {
+    settings.notificationPosition = 'top-middle'; // matches the previous hardcoded behavior
+  }
   return settings;
 }
 
@@ -126,6 +129,38 @@ function saveSettingsToDisk(settings) {
 // stays alive for the whole app session and just streams toast data into
 // it via IPC — nothing to do with the OS notification center at all.
 
+// Computes the notify window's on-screen position from the user's
+// setting. Positions are relative to the primary display's work area
+// (which excludes the taskbar), with a small margin so toasts don't sit
+// flush against the screen edge.
+function computeNotifyPosition(position, workArea, winWidth, winHeight) {
+  var margin = 10;
+  var pos = position || 'top-middle';
+  var parts = pos.split('-');
+  var vertical = parts[0];   // 'top' | 'middle' | 'bottom'
+  var horizontal = parts[1]; // 'left' | 'middle'/'center' | 'right'
+
+  var x;
+  if (horizontal === 'left') {
+    x = workArea.x + margin;
+  } else if (horizontal === 'right') {
+    x = workArea.x + workArea.width - winWidth - margin;
+  } else {
+    x = Math.round(workArea.x + (workArea.width - winWidth) / 2);
+  }
+
+  var y;
+  if (vertical === 'bottom') {
+    y = workArea.y + workArea.height - winHeight - margin;
+  } else if (vertical === 'middle' || pos === 'center') {
+    y = Math.round(workArea.y + (workArea.height - winHeight) / 2);
+  } else {
+    y = workArea.y + margin;
+  }
+
+  return { x: x, y: y };
+}
+
 function getNotifyWindow() {
   if (notifyWindow && !notifyWindow.isDestroyed()) return notifyWindow;
 
@@ -133,8 +168,10 @@ function getNotifyWindow() {
   const workArea = display.workArea;
   const winWidth = 400;
   const winHeight = 640;
-  const x = Math.round(workArea.x + (workArea.width - winWidth) / 2);
-  const y = workArea.y + 10;
+  const position = loadSettings().notificationPosition;
+  const coords = computeNotifyPosition(position, workArea, winWidth, winHeight);
+  const x = coords.x;
+  const y = coords.y;
 
   notifyWindow = new BrowserWindow({
     width: winWidth,
@@ -176,7 +213,7 @@ function notify(title, body, kind) {
     const soundsEnabled = settings.soundsEnabled;
     const notificationVolume = settings.notificationVolume;
     const send = function () {
-      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume });
+      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle' });
       if (!win.isVisible()) win.showInactive();
     };
     if (win.webContents.isLoading()) {
@@ -331,6 +368,7 @@ const LEVEL_UP_RE = /\]\s*You have gained a level! Welcome to level (\d+)!/;
 // the log at all (that comes from polling the shared server data instead).
 const SELF_DEATH_RE = /\]\s*You have been slain by (.+?)!/;
 const AA_GAIN_RE = /\]\s*You have gained an ability point!\s*You now have (\d+) ability points?\./;
+const ZONE_ENTER_RE = /\]\s*You have entered ([^.]+)\./;
 
 var watchState = {
   timer: null,
@@ -342,7 +380,11 @@ var watchState = {
   // hasn't been resolved yet. Guards against repeated "You Died" spam if
   // a character keeps dying (e.g. corpse-camped) before being deleted —
   // only the FIRST death after a roll gets reported.
-  characterActive: false
+  characterActive: false,
+  // Whether the current active character has "D4 Only" enabled — drives
+  // the zone-enter reminder below. Kept in sync by the renderer via the
+  // character-rolled/character-locked-sync/character-unlocked IPC calls.
+  characterD4: false
 };
 
 function stopLogWatching() {
@@ -452,6 +494,28 @@ function processLogLine(line) {
     const totalAA = parseInt(aaMatch[1], 10);
     notify('AA Gained!', (watchState.characterName || 'Your character') + ' has gained an AA! (now has ' + totalAA + ' ability point' + (totalAA === 1 ? '' : 's') + ')', 'aa');
     submitMilestone('aa', { aaTotal: totalAA });
+    return;
+  }
+
+  if (/\bentered\b/i.test(line)) {
+    realtimeDebugLog('ZONE — line contains "entered": ' + JSON.stringify(line));
+  }
+  const zoneMatch = line.match(ZONE_ENTER_RE);
+  if (zoneMatch) {
+    var zoneName = zoneMatch[1].trim();
+    realtimeDebugLog('ZONE — regex matched, zone="' + zoneName + '" characterActive=' + watchState.characterActive + ' characterD4=' + watchState.characterD4);
+    if (watchState.characterActive && watchState.characterD4) {
+      // "(Refined)" in the zone name means it's already a D4 zone — no
+      // need to remind someone to do something they've already done.
+      if (zoneName.indexOf('(Refined)') === -1) {
+        // Purely local — a reminder for the person playing, not a group
+        // event, so this never touches the backend or broadcasts to anyone.
+        notify('D4 Reminder', "Don't forget to change to D4 difficulty!", 'info');
+        realtimeDebugLog('ZONE — D4 reminder notification fired');
+      } else {
+        realtimeDebugLog('ZONE — skipped, zone already (Refined)');
+      }
+    }
     return;
   }
 
@@ -741,6 +805,16 @@ ipcMain.handle('save-settings', function (event, newSettings) {
     stopLogWatching();
   }
   connectRealtime();
+  // If the notify window already exists, move it now rather than making
+  // the user restart the app to see a position change take effect.
+  if (notifyWindow && !notifyWindow.isDestroyed()) {
+    try {
+      var bounds = notifyWindow.getBounds();
+      var wa = screen.getPrimaryDisplay().workArea;
+      var c = computeNotifyPosition(merged.notificationPosition, wa, bounds.width, bounds.height);
+      notifyWindow.setPosition(c.x, c.y);
+    } catch (e) { /* non-critical — it'll be correct next time the window is created */ }
+  }
   return merged;
 });
 
@@ -757,22 +831,24 @@ ipcMain.handle('get-watch-status', function () {
   };
 });
 
-ipcMain.handle('character-rolled', function () {
+ipcMain.handle('character-rolled', function (event, payload) {
   // A fresh character starts over — clear any level tracked from a
   // previous (now-resolved) character so a death before the first
   // real level-up line doesn't misreport an old level. Also (re)arm the
   // death/ding guard so this new character's first death gets reported.
   watchState.currentLevel = null;
   watchState.characterActive = true;
+  watchState.characterD4 = !!(payload && payload.d4);
   sendToRenderer('level-update', null);
 });
 
-ipcMain.handle('character-locked-sync', function () {
+ipcMain.handle('character-locked-sync', function (event, payload) {
   // Used only at app startup to inform main that a character was ALREADY
   // locked from a previous session (not a fresh roll just now) — arms the
   // guard without touching currentLevel, since that's separately recovered
   // from log history.
   watchState.characterActive = true;
+  watchState.characterD4 = !!(payload && payload.d4);
 });
 
 ipcMain.handle('character-unlocked', function () {
@@ -781,6 +857,7 @@ ipcMain.handle('character-unlocked', function () {
   // so keep the guard in sync to prevent any stray auto-detected death
   // line for the now-resolved character from firing another notification.
   watchState.characterActive = false;
+  watchState.characterD4 = false;
 });
 
 ipcMain.handle('group-changed', function () {
@@ -831,7 +908,12 @@ ipcMain.handle('download-update', function () {
 
 ipcMain.handle('install-update', function () {
   app.isQuitting = true;
-  autoUpdater.quitAndInstall();
+  // (isSilent, isForceRunAfter) — installs without the next/finish
+  // wizard and relaunches the app automatically once done. This only
+  // works alongside "oneClick": true in the nsis build config; with the
+  // assisted installer, a silent install completes but the app won't
+  // relaunch on its own.
+  autoUpdater.quitAndInstall(true, true);
 });
 
 // ---- Window & tray ----

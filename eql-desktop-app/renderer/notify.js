@@ -52,6 +52,17 @@
     var id = 'toast-' + (counter++);
     var icon = ICONS[payload.kind] || ICONS.info;
 
+    // Anchor the stack to match where the window sits on screen, so
+    // toasts hug the correct edge instead of floating in the middle of
+    // the (much taller) transparent notify window.
+    var pos = payload.position || 'top-middle';
+    stack.classList.remove('anchor-bottom', 'anchor-middle');
+    if (pos.indexOf('bottom') === 0) {
+      stack.classList.add('anchor-bottom');
+    } else if (pos.indexOf('middle') === 0 || pos === 'center') {
+      stack.classList.add('anchor-middle');
+    }
+
     if (payload.soundsEnabled !== false) playSoundFor(payload.kind, payload.notificationVolume);
 
     var el = document.createElement('div');

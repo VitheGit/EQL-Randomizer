@@ -16,11 +16,11 @@ contextBridge.exposeInMainWorld('eqlApp', {
   getWatchStatus: function () {
     return ipcRenderer.invoke('get-watch-status');
   },
-  notifyCharacterRolled: function () {
-    return ipcRenderer.invoke('character-rolled');
+  notifyCharacterRolled: function (payload) {
+    return ipcRenderer.invoke('character-rolled', payload);
   },
-  notifyCharacterLockedSync: function () {
-    return ipcRenderer.invoke('character-locked-sync');
+  notifyCharacterLockedSync: function (payload) {
+    return ipcRenderer.invoke('character-locked-sync', payload);
   },
   notifyCharacterUnlocked: function () {
     return ipcRenderer.invoke('character-unlocked');

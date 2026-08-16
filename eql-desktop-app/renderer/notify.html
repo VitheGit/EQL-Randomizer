@@ -6,6 +6,7 @@
   html, body {
     margin: 0; padding: 0; background: transparent; overflow: hidden;
     font-family: 'Segoe UI', sans-serif;
+    height: 100%;
   }
   #stack {
     display: flex;
@@ -13,6 +14,21 @@
     align-items: center;
     gap: 10px;
     padding-top: 16px;
+    height: 100%;
+    box-sizing: border-box;
+    justify-content: flex-start;
+  }
+  /* For bottom-anchored positions, stack toasts up from the bottom edge
+     so they appear near the screen edge rather than floating far above
+     it — the notify window itself is much taller than its contents. */
+  #stack.anchor-bottom {
+    justify-content: flex-end;
+    padding-top: 0;
+    padding-bottom: 16px;
+  }
+  #stack.anchor-middle {
+    justify-content: center;
+    padding-top: 0;
   }
   .toast {
     width: 360px;
