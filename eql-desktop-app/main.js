@@ -206,13 +206,22 @@ function getNotifyWindow() {
   return notifyWindow;
 }
 
+// Achievements go to the chat transcript only — no popup toast. They're
+// frequent enough that toasting each one would be noise, but they're
+// still worth a shared record.
+function chatAnnounce(text, kind) {
+  var entry = { title: text, body: '', kind: kind || 'info', time: new Date().toISOString(), chatOnly: true };
+  recordChat({ system: true, text: text, time: entry.time, kind: kind || 'info' });
+  sendToChatWindows('chat-system', entry);
+}
+
 function notify(title, body, kind) {
   // Mirror into the group chat as a system line. Done here so EVERY
   // notification path is covered automatically, and deliberately before
   // the notificationsEnabled check — turning off popups shouldn't also
   // blank out the chat history of what happened.
   var sysEntry = { title: title, body: body, kind: kind || 'info', time: new Date().toISOString() };
-  recordChat({ system: true, text: title + (body ? ' — ' + body : ''), time: sysEntry.time });
+  recordChat({ system: true, text: title + (body ? ' — ' + body : ''), time: sysEntry.time, kind: sysEntry.kind });
   sendToChatWindows('chat-system', sysEntry);
   try {
     const settings = loadSettings();
@@ -394,6 +403,7 @@ const LEVEL_UP_RE = /\]\s*You have gained a level! Welcome to level (\d+)!/;
 const SELF_DEATH_RE = /\]\s*You have been slain by (.+?)!/;
 const AA_GAIN_RE = /\]\s*You have gained an ability point!\s*You now have (\d+) ability points?\./;
 const ZONE_ENTER_RE = /\]\s*You have entered ([^.]+)\./;
+const ACHIEVEMENT_RE = /\]\s*You have completed achievement:\s*(.+?)\s*$/;
 
 // EQ log lines are prefixed like "[Wed Jul 29 12:38:40 2026] ...".
 // Returns null for anything that doesn't parse, so callers can decide
@@ -444,6 +454,39 @@ var watchState = {
   lastMismatchNotifiedAt: 0
 };
 
+// Scans the log for the current character's highest level-up. Split out
+// so it can be re-run: at app start the scan happens before the renderer
+// has logged in and told us WHEN the character was rolled, so the first
+// pass has no cutoff and can pick up a previous character's level-ups
+// from the same log file. Re-running once rolledAt is known corrects it.
+function recoverLevelFromLog() {
+  if (!watchState.logPath) return;
+  try {
+    const content = fs.readFileSync(watchState.logPath, 'utf8');
+    const rolledAt = watchState.characterRolledAt ? new Date(watchState.characterRolledAt) : null;
+    const lines = content.split(/\r?\n/);
+    let recovered = null;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(LEVEL_UP_RE);
+      if (!m) continue;
+      if (rolledAt) {
+        const stamp = parseLogTimestamp(lines[i]);
+        if (!stamp || stamp < rolledAt) continue; // belongs to an earlier character
+      }
+      recovered = parseInt(m[1], 10);
+    }
+    // No qualifying level-up means this character hasn't leveled yet —
+    // that's level 1, not "unknown".
+    const level = recovered !== null ? recovered : (watchState.characterActive ? 1 : null);
+    if (watchState.currentLevel !== level) {
+      watchState.currentLevel = level;
+      sendToRenderer('level-update', level);
+    }
+  } catch (e) {
+    // Non-fatal — just means we start without a recovered level.
+  }
+}
+
 function stopLogWatching() {
   if (watchState.timer) clearInterval(watchState.timer);
   watchState.timer = null;
@@ -471,26 +514,7 @@ function startLogWatching(logPath, characterName) {
     // file, so the previous character's level-ups are still sitting in
     // there — without this cutoff, a fresh level 1 would inherit the
     // dead character's level and report the wrong one on death.
-    try {
-      const content = fs.readFileSync(logPath, 'utf8');
-      const rolledAt = watchState.characterRolledAt ? new Date(watchState.characterRolledAt) : null;
-      const lines = content.split(/\r?\n/);
-      let recovered = null;
-      for (let i = 0; i < lines.length; i++) {
-        const m = lines[i].match(LEVEL_UP_RE);
-        if (!m) continue;
-        if (rolledAt) {
-          const stamp = parseLogTimestamp(lines[i]);
-          if (!stamp || stamp < rolledAt) continue; // belongs to an earlier character
-        }
-        recovered = parseInt(m[1], 10);
-      }
-      // No qualifying level-up means this character hasn't leveled yet —
-      // that's level 1, not "unknown".
-      watchState.currentLevel = recovered !== null ? recovered : (watchState.characterActive ? 1 : null);
-    } catch (e) {
-      // Non-fatal — just means we start without a recovered level.
-    }
+    recoverLevelFromLog();
   } catch (e) {
     watchState.lastSize = 0;
     notify('Log File Not Found', 'Could not open the log file at the configured path. Check Settings.', 'error');
@@ -665,6 +689,16 @@ function processLogLine(line) {
   const whoMatch = line.match(WHO_LINE_RE);
   if (whoMatch) {
     handleWhoLine(parseInt(whoMatch[1], 10), whoMatch[2], whoMatch[3]);
+    return;
+  }
+
+  const achMatch = line.match(ACHIEVEMENT_RE);
+  if (achMatch && watchState.characterActive) {
+    var achName = achMatch[1].trim();
+    if (achName) {
+      chatAnnounce((watchState.characterName || 'You') + ' has earned an achievement! - ' + achName, 'achievement');
+      submitMilestone('achievement', { achievement: achName });
+    }
     return;
   }
 
@@ -946,6 +980,8 @@ async function pollSharedLogInner() {
           notify('Level 50!', entry.name + ' reached level 50!', 'ding');
         } else if (entry.type === 'levelup') {
           notify('Level Up!', entry.name + ' reached level ' + entry.level + '.', 'levelup');
+        } else if (entry.type === 'achievement') {
+          chatAnnounce(entry.name + ' has earned an achievement! - ' + entry.achievement, 'achievement');
         } else if (entry.type === 'aa') {
           notify('AA Gained!', entry.name + ' has gained an AA! (now has ' + entry.aaTotal + ' ability point' + (entry.aaTotal === 1 ? '' : 's') + ')', 'aa');
         }
@@ -1059,6 +1095,10 @@ ipcMain.handle('character-locked-sync', function (event, payload) {
   watchState.characterD4 = !!(payload && payload.d4);
   watchState.characterClasses = (payload && payload.classes) || null;
   watchState.characterRolledAt = (payload && payload.rolledAt) || null;
+  // Now that we know when this character was rolled, redo the level scan
+  // — the boot-time pass ran before this info existed and may have
+  // picked up a previous character's level-ups from the same log file.
+  recoverLevelFromLog();
   // The app may have been closed while they played — give the log
   // watcher a moment to recover the current level from history, then
   // push a catch-up sync so the leaderboard reflects reality.

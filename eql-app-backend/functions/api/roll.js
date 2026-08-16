@@ -39,6 +39,11 @@ export async function onRequestPost(context) {
   // just dropped rather than trusted as-is.
   const server = SERVERS.filter(function (s) { return body.server && s.toLowerCase() === String(body.server).toLowerCase(); })[0] || null;
   const d4 = !!body.d4;
+  // ONE timestamp for both the character record and its log entry. These
+  // were previously two separate new Date() calls that differed by a few
+  // milliseconds, which broke the exact-match dedupe in ensureRollEntry
+  // and caused a duplicate roll entry to be inserted.
+  const rolledAt = new Date().toISOString();
   let character;
 
   if (manualBuild) {
@@ -77,7 +82,7 @@ export async function onRequestPost(context) {
       d4: d4,
       // Recorded on the character itself so a cleared log can be
       // reconstructed later without losing the run's start time.
-      rolledAt: new Date().toISOString(),
+      rolledAt: rolledAt,
       locked: true
     };
   } else {
@@ -98,7 +103,7 @@ export async function onRequestPost(context) {
       d4: d4,
       // Recorded on the character itself so a cleared log can be
       // reconstructed later without losing the run's start time.
-      rolledAt: new Date().toISOString(),
+      rolledAt: rolledAt,
       locked: true
     };
   }
@@ -110,7 +115,7 @@ export async function onRequestPost(context) {
   const log = logRaw ? JSON.parse(logRaw) : [];
   const entry = {
     type: 'roll',
-    time: new Date().toISOString(),
+    time: rolledAt,
     name: username,
     primary: character.primary,
     secondary: character.secondary,

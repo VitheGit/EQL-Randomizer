@@ -37,7 +37,8 @@
     messagesEl.innerHTML = messages.map(function (m) {
       var t = '<span class="time">' + escapeHtml(formatTime(m.time)) + '</span>';
       if (m.system) {
-        return '<div class="line system">' + t + '<span class="text">' + escapeHtml(m.text) + '</span></div>';
+        var sysClass = 'line system' + (m.kind === 'achievement' ? ' achievement' : '');
+        return '<div class="' + sysClass + '">' + t + '<span class="text">' + escapeHtml(m.text) + '</span></div>';
       }
       // Colors chosen for the light main window can be too dark against
       // this dark panel, so names render in a consistently readable tint
@@ -94,7 +95,7 @@
   });
 
   window.eqlOverlay.onChatSystem(function (payload) {
-    push({ system: true, text: payload.title + (payload.body ? ' — ' + payload.body : ''), time: payload.time });
+    push({ system: true, text: payload.title + (payload.body ? ' — ' + payload.body : ''), time: payload.time, kind: payload.kind });
   });
 
   window.eqlOverlay.onChatPresence(function (users) {

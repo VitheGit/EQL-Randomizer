@@ -15,12 +15,22 @@
 export function ensureRollEntry(log, username, character) {
   if (!character) return log;
 
-  // Does a roll entry for this character already exist? Matched on the
-  // stored roll timestamp so an OLD character's roll entry (from a
-  // previous, already-resolved run) can't be mistaken for this one's.
+  // Does a roll entry for this character already exist?
+  //
+  // Matched on a small time WINDOW rather than exact equality. Characters
+  // rolled before the timestamps were unified have a roll entry whose
+  // time differs from rolledAt by a few milliseconds; an exact match
+  // would miss it and insert a duplicate on every milestone.
+  //
+  // The window is deliberately tiny (5s) so a PREVIOUS character's roll
+  // entry still can't be mistaken for this one's.
+  const rolledMs = character.rolledAt ? new Date(character.rolledAt).getTime() : null;
   const hasRoll = log.some(function (e) {
-    return e && e.type === 'roll' && e.name === username &&
-      (character.rolledAt ? e.time === character.rolledAt : true);
+    if (!e || e.type !== 'roll' || e.name !== username) return false;
+    if (rolledMs === null) return true; // no reference point — assume the newest roll is this one
+    const entryMs = new Date(e.time).getTime();
+    if (isNaN(entryMs)) return false;
+    return Math.abs(entryMs - rolledMs) < 5000;
   });
   if (hasRoll) return log;
 

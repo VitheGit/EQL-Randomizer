@@ -747,7 +747,7 @@
       : state.chatMessages.map(function (m) {
           var t = formatChatTime(m.time);
           if (m.system) {
-            return '<div class="chat-line chat-system">' +
+            return '<div class="chat-line chat-system' + (m.kind === 'achievement' ? ' chat-achievement' : '') + '">' +
               '<span class="chat-time">' + escapeHtml(t) + '</span>' +
               '<span class="chat-text">' + escapeHtml(m.text) + '</span>' +
             '</div>';
@@ -878,6 +878,7 @@
       '<p class="hint" style="margin:-6px 0 14px;">Showing: ' + (state.groupName ? escapeHtml(state.groupName) : 'Local') + '</p>';
     var visibleLog = state.log.filter(function (entry) {
       if (entry.type === 'cleared') return true; // a clear event applies to the whole log, not one tab
+      if (entry.type === 'achievement') return false; // announced in chat only, by request
       if (entry.type === 'aa') return false;
       if (entry.type === 'levelup' && entry.level % 10 !== 0) return false;
       return !!entry.manualBuild === (state.logTab === 'manual');
@@ -1675,7 +1676,7 @@
     // Notifications double as a shared record of what happened, so they
     // land in the chat transcript too.
     var text = payload.title + (payload.body ? ' — ' + payload.body : '');
-    pushChatMessage({ system: true, text: text, time: payload.time });
+    pushChatMessage({ system: true, text: text, time: payload.time, kind: payload.kind });
     render();
   });
 
