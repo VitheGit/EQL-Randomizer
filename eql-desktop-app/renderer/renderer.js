@@ -30,7 +30,7 @@
     log: [], leaderboard: [], leaderboardResetAt: null,
     lbTab: 'randomized', // 'randomized' | 'manual'
     lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false, lbFilterD4: false,
-    chatMessages: [], chatInput: '', chatCollapsed: false, chatOnlineUsers: [], chatColor: '#2A2016', chatOverlayOpen: false, chatOverlayOpacity: 0.9,
+    chatMessages: [], chatInput: '', chatCollapsed: false, chatOnlineUsers: [], chatOfflineUsers: [], chatColor: '#2A2016', chatOverlayOpen: false, chatOverlayOpacity: 0.9, emojiPickerOpen: false,
     logTab: 'randomized', // 'randomized' | 'manual'
 
     settingsLogFilePath: '', settingsCharacterName: '',
@@ -389,8 +389,16 @@
     } else if (entry.type === 'cleared') {
       var clearedWhat = entry.target === 'leaderboard' ? 'Leaderboard' : 'Log';
       text = '<em style="opacity:0.8;">' + clearedWhat + ' was cleared on ' + escapeHtml(formatStamp(new Date(entry.time))) + ' by ' + escapeHtml(entry.name || 'Unknown') + '</em>';
-    } else {
+    } else if (entry.type === 'notable') {
+      text = '<strong>&#128481; ' + who + ' defeated ' + escapeHtml(entry.npc) +
+        (typeof entry.difficulty === 'number' ? ' on Difficulty ' + entry.difficulty : '') + '</strong>' + buildTag;
+    } else if (entry.type === 'died') {
       text = '<strong>' + who + ' died' + (entry.level ? ' at level ' + escapeHtml(entry.level) : '') + ':</strong>' + buildTag + killedByTag + pathTag + manualTag;
+    } else {
+      // Unknown type. This used to fall through to the death message,
+      // so any newer entry type silently rendered as "X died" — wrong,
+      // and indistinguishable from a real death.
+      text = '<strong>' + who + ':</strong> ' + escapeHtml(entry.type);
     }
     return '<div class="log-row"><span class="log-stamp">' + stamp + '</span><span class="log-text">' + text + '</span></div>';
   }
@@ -761,14 +769,17 @@
         }).join('');
 
     var online = state.chatOnlineUsers || [];
-    var roster = online.length === 0
-      ? '<p class="chat-online-empty">Nobody else online</p>'
-      : online.map(function (u) {
-          var mine = u === state.username;
-          return '<div class="chat-online-user' + (mine ? ' chat-mine' : '') + '">' +
-            '<span class="chat-online-dot"></span>' + escapeHtml(u) +
-          '</div>';
-        }).join('');
+    var offline = state.chatOfflineUsers || [];
+
+    function rosterList(names, offlineStyle) {
+      if (!names.length) return '<p class="chat-online-empty">' + (offlineStyle ? 'Nobody' : 'Nobody else online') + '</p>';
+      return names.map(function (u) {
+        var mine = u === state.username;
+        return '<div class="chat-online-user' + (mine ? ' chat-mine' : '') + (offlineStyle ? ' is-offline' : '') + '">' +
+          '<span class="chat-online-dot' + (offlineStyle ? ' offline' : '') + '"></span>' + escapeHtml(u) +
+        '</div>';
+      }).join('');
+    }
 
     return '<div class="card">' +
       '<h3>Group Chat — ' + escapeHtml(state.groupName) + '</h3>' +
@@ -776,11 +787,23 @@
         '<div class="chat-scroll" id="chat-scroll">' + body + '</div>' +
         '<div class="chat-online">' +
           '<div class="chat-online-title">Online (' + online.length + ')</div>' +
-          roster +
+          rosterList(online, false) +
+          (offline.length
+            ? '<div class="chat-online-title chat-offline-title">Offline (' + offline.length + ')</div>' + rosterList(offline, true)
+            : '') +
         '</div>' +
       '</div>' +
       '<div class="chat-input-row">' +
+        (state.emojiPickerOpen
+          ? '<div class="chat-emoji-panel" id="emoji-panel">' +
+              window.EQL_EMOJI.list.map(function (e) {
+                return '<button type="button" class="emoji-pick" data-emoji="' + escapeHtml(e.c) + '"' +
+                  ' title="' + escapeHtml(e.c + '  :' + e.s + ':') + '">' + e.c + '</button>';
+              }).join('') +
+            '</div>'
+          : '') +
         '<input type="text" id="in-chat" maxlength="500" placeholder="Message your group…" value="' + escapeHtml(state.chatInput) + '" />' +
+        '<button type="button" class="chat-emoji-btn" id="btn-emoji" title="Emoji">&#128512;</button>' +
         '<button class="btn btn-primary" id="btn-chat-send">Send</button>' +
       '</div>' +
       '<div class="chat-controls-row">' +
@@ -1151,6 +1174,34 @@
     }
     var chatSendBtn = document.getElementById('btn-chat-send');
     if (chatSendBtn) chatSendBtn.addEventListener('click', handleSendChat);
+
+    var emojiBtn = document.getElementById('btn-emoji');
+    if (emojiBtn) emojiBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      state.emojiPickerOpen = !state.emojiPickerOpen;
+      render();
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.emoji-pick'), function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var input = document.getElementById('in-chat');
+        var emoji = btn.getAttribute('data-emoji');
+        if (!input) return;
+        // Insert at the caret rather than appending, and update the DOM
+        // directly — a re-render here would lose the caret position.
+        var start = input.selectionStart == null ? input.value.length : input.selectionStart;
+        var end = input.selectionEnd == null ? input.value.length : input.selectionEnd;
+        input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+        state.chatInput = input.value;
+        var caret = start + emoji.length;
+        input.focus();
+        input.setSelectionRange(caret, caret);
+      });
+    });
+
+    var emojiPanel = document.getElementById('emoji-panel');
+    if (emojiPanel) emojiPanel.addEventListener('click', function (e) { e.stopPropagation(); });
 
     var opacitySlider = document.getElementById('in-overlay-opacity');
     if (opacitySlider) {
@@ -1588,6 +1639,10 @@
   async function handleSendChat() {
     var text = (state.chatInput || '').trim();
     if (!text || !state.groupName) return;
+    // :beer: -> 🍺 before it leaves this machine, so recipients and the
+    // worker never need to know shortcodes exist.
+    text = window.EQL_EMOJI.expand(text);
+    state.emojiPickerOpen = false;
     var res = await window.eqlApp.sendChat(text);
     state.chatInput = '';
     if (res && res.ok === false) {
@@ -1662,13 +1717,30 @@
     render();
   });
 
+  // Click anywhere outside the picker closes it. Registered once at
+  // startup rather than inside bindAppEvents, which runs on every render.
+  document.addEventListener('click', function () {
+    if (state.emojiPickerOpen) {
+      state.emojiPickerOpen = false;
+      render();
+    }
+  });
+
   window.eqlApp.onChatOverlayState(function (open) {
     state.chatOverlayOpen = !!open;
     render();
   });
 
-  window.eqlApp.onChatPresence(function (users) {
-    state.chatOnlineUsers = users || [];
+  window.eqlApp.onChatPresence(function (payload) {
+    // Older payloads were a bare array of online users; newer ones carry
+    // both lists. Handle both so a version mismatch degrades gracefully.
+    if (Array.isArray(payload)) {
+      state.chatOnlineUsers = payload;
+      state.chatOfflineUsers = [];
+    } else {
+      state.chatOnlineUsers = (payload && payload.users) || [];
+      state.chatOfflineUsers = (payload && payload.offline) || [];
+    }
     render();
   });
 

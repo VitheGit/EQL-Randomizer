@@ -1,6 +1,6 @@
 {
   "name": "eql-legends-randomizer",
-  "version": "1.0.90",
+  "version": "1.0.95",
   "description": "EQ Legends Randomizer - character randomizer with log-file death/level tracking",
   "main": "main.js",
   "author": "EQ Legends Randomizer",

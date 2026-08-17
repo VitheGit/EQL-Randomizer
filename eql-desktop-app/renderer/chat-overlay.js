@@ -58,17 +58,23 @@
     render();
   }
 
-  function renderOnline(users) {
-    users = users || [];
-    onlineEl.textContent = users.length
-      ? 'Online (' + users.length + '): ' + users.join(', ')
-      : 'Online: nobody else';
+  function renderOnline(payload) {
+    var online = Array.isArray(payload) ? payload : ((payload && payload.users) || []);
+    var offline = (payload && !Array.isArray(payload) && payload.offline) || [];
+    var parts = [];
+    parts.push('<span class="on">Online (' + online.length + ')' + (online.length ? ': ' + escapeHtml(online.join(', ')) : '') + '</span>');
+    if (offline.length) {
+      parts.push('<span class="off">Offline (' + offline.length + '): ' + escapeHtml(offline.join(', ')) + '</span>');
+    }
+    onlineEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
   }
 
   function send() {
     var text = (inputEl.value || '').trim();
     if (!text) return;
+    text = window.EQL_EMOJI.expand(text);
     inputEl.value = '';
+    emojiPanel.classList.remove('open');
     window.eqlOverlay.sendChat(text).then(function (res) {
       if (res && res.ok === false) {
         push({ system: true, text: 'Could not send — not connected.', time: new Date().toISOString() });
@@ -76,6 +82,32 @@
     });
     inputEl.focus();
   }
+
+  // Emoji picker — built once, since the overlay isn't re-rendered.
+  var emojiBtn = document.getElementById('emojiBtn');
+  var emojiPanel = document.getElementById('emojiPanel');
+  window.EQL_EMOJI.list.forEach(function (e) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = e.c;
+    b.title = e.c + '  :' + e.s + ':';
+    b.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      var start = inputEl.selectionStart == null ? inputEl.value.length : inputEl.selectionStart;
+      var end = inputEl.selectionEnd == null ? inputEl.value.length : inputEl.selectionEnd;
+      inputEl.value = inputEl.value.slice(0, start) + e.c + inputEl.value.slice(end);
+      var caret = start + e.c.length;
+      inputEl.focus();
+      inputEl.setSelectionRange(caret, caret);
+    });
+    emojiPanel.appendChild(b);
+  });
+  emojiBtn.addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    emojiPanel.classList.toggle('open');
+  });
+  emojiPanel.addEventListener('click', function (ev) { ev.stopPropagation(); });
+  document.addEventListener('click', function () { emojiPanel.classList.remove('open'); });
 
   sendBtn.addEventListener('click', send);
   inputEl.addEventListener('keydown', function (e) {
@@ -87,7 +119,7 @@
     myUsername = payload.username || '';
     messages = (payload.messages || []).slice(-MAX);
     render();
-    renderOnline(payload.users);
+    renderOnline(payload.presence);
   });
 
   window.eqlOverlay.onChatMessage(function (msg) {
@@ -98,7 +130,7 @@
     push({ system: true, text: payload.title + (payload.body ? ' — ' + payload.body : ''), time: payload.time, kind: payload.kind });
   });
 
-  window.eqlOverlay.onChatPresence(function (users) {
-    renderOnline(users);
+  window.eqlOverlay.onChatPresence(function (payload) {
+    renderOnline(payload);
   });
 })();

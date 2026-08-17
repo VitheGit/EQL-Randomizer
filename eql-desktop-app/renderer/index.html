@@ -196,6 +196,9 @@
     width: 7px; height: 7px; border-radius: 50%; background: #4C8A4C;
     display: inline-block; margin-right: 6px; flex-shrink: 0;
   }
+  .chat-online-dot.offline { background: #A83232; }
+  .chat-online-user.is-offline { color: var(--ink-soft); opacity: 0.75; }
+  .chat-offline-title { margin-top: 8px; }
   .chat-online-empty { font-size: 11px; color: var(--ink-soft); font-style: italic; margin: 0; }
   @media (max-width: 900px) {
     .chat-body { flex-direction: column; }
@@ -216,7 +219,26 @@
   /* Achievements get their own tone so they stand out from the
      death/ding/level-up system lines. */
   .chat-achievement .chat-text { color: #9A7B12; font-weight: 600; }
-  .chat-input-row { display: flex; gap: 8px; }
+  .chat-input-row { display: flex; gap: 8px; position: relative; }
+  .chat-emoji-btn {
+    flex-shrink: 0; width: 34px; padding: 0; font-size: 16px; line-height: 1;
+    cursor: pointer; background: rgba(255,255,255,0.6);
+    border: 1px solid var(--bronze); border-radius: 4px;
+  }
+  .chat-emoji-btn:hover { background: rgba(255,255,255,0.9); }
+  .chat-emoji-panel {
+    position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 40;
+    width: 300px; max-height: 210px; overflow-y: auto;
+    display: flex; flex-wrap: wrap; gap: 2px;
+    padding: 8px; border-radius: 6px;
+    background: #F6ECD3; border: 1px solid var(--bronze);
+    box-shadow: 0 8px 20px -6px rgba(42,32,22,0.45);
+  }
+  .chat-emoji-panel button {
+    width: 30px; height: 30px; font-size: 17px; line-height: 1;
+    background: transparent; border: none; border-radius: 4px; cursor: pointer;
+  }
+  .chat-emoji-panel button:hover { background: rgba(42,32,22,0.12); }
   /* Opacity, name-color swatches and the overlay toggle share one row. */
   .chat-controls-row { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .chat-opacity-label { font-size: 11px; color: var(--ink-soft); font-style: italic; white-space: nowrap; flex-shrink: 0; }
@@ -367,6 +389,7 @@
 </head>
 <body>
   <div id="app"></div>
-  <script src="renderer.js"></script>
+  <script src="emoji.js"></script>
+<script src="renderer.js"></script>
 </body>
 </html>

@@ -17,6 +17,9 @@
 // input: it keeps everything readable against the parchment background,
 // and means a client can never inject arbitrary values into what other
 // people render.
+// How long an offline member stays listed before being forgotten.
+const MEMBER_TTL_MS = 5 * 24 * 60 * 60 * 1000; // 5 days
+
 const CHAT_COLORS = [
   '#2A2016', '#8C3B2A', '#A85A1F', '#8A6A22',
   '#4B5A3A', '#1F6B6B', '#2C4A7C', '#6B3A7C', '#9B2242'
@@ -191,7 +194,8 @@ export class GroupRoom {
       // Sent by a client once its socket is genuinely open. Using this
       // rather than broadcasting at accept-time avoids a race where the
       // roster goes out before the new client can receive it.
-      this.broadcastRoster();
+      await this.touchMember(att.username);
+      await this.broadcastRoster();
       return;
     }
 
@@ -225,7 +229,13 @@ export class GroupRoom {
   async webSocketClose(ws, code, reason, wasClean) {
     console.log('[GroupRoom] webSocketClose fired. code=' + code + ' reason=' + reason + ' wasClean=' + wasClean);
     // Someone left — tell everyone still here so their list updates.
-    try { this.broadcastRoster(); } catch (e) { /* non-critical */ }
+    try {
+      // Record when they left, so the 5-day clock starts from their last
+      // actual activity rather than from when they first connected.
+      const a = ws.deserializeAttachment();
+      if (a && a.username) await this.touchMember(a.username);
+    } catch (e) { /* attachment may be gone — non-critical */ }
+    try { await this.broadcastRoster(); } catch (e) { /* non-critical */ }
     // No manual cleanup needed — a closed socket just stops appearing in
     // future state.getWebSockets() calls on its own.
   }
@@ -251,8 +261,60 @@ export class GroupRoom {
     });
   }
 
-  broadcastRoster() {
-    this.broadcast(JSON.stringify({ type: 'presence', users: this.getRoster() }));
+  // Everyone who has connected to this room recently, kept in the Durable
+  // Object's own storage. This is what lets the client show an offline
+  // section — the socket list alone only knows who's here right now.
+  // Stored as one object under a single key (username -> last-seen ms)
+  // rather than a key per member, so reads and writes stay at one row.
+  async loadMembers() {
+    const raw = await this.state.storage.get('members');
+    if (!raw) return {};
+    if (Array.isArray(raw)) {
+      // Migrate the original shape, which was a plain array of names with
+      // no timestamps. Treat them all as seen now rather than expiring
+      // everyone the moment this ships.
+      const now = Date.now();
+      const migrated = {};
+      raw.forEach(function (n) { migrated[n] = now; });
+      await this.state.storage.put('members', migrated);
+      return migrated;
+    }
+    return raw;
+  }
+
+  // Called when someone connects AND when they disconnect, so "last seen"
+  // reflects when they actually left rather than when they arrived —
+  // otherwise a long uninterrupted session would age out mid-play.
+  async touchMember(username) {
+    if (!username) return;
+    const members = await this.loadMembers();
+    members[username] = Date.now();
+    await this.state.storage.put('members', members);
+  }
+
+  async broadcastRoster() {
+    const online = this.getRoster();
+    const members = await this.loadMembers();
+    const now = Date.now();
+
+    // Drop anyone who hasn't connected in a while, so the offline list
+    // stays a picture of the active group rather than growing forever.
+    let pruned = false;
+    Object.keys(members).forEach(function (name) {
+      if (online.indexOf(name) === -1 && (now - members[name]) > MEMBER_TTL_MS) {
+        delete members[name];
+        pruned = true;
+      }
+    });
+    // Only write when something actually changed — this runs on every
+    // join and leave, and pruning is rare.
+    if (pruned) await this.state.storage.put('members', members);
+
+    const offline = Object.keys(members)
+      .filter(function (m) { return online.indexOf(m) === -1; })
+      .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+
+    this.broadcast(JSON.stringify({ type: 'presence', users: online, offline: offline }));
   }
 
   broadcast(message) {

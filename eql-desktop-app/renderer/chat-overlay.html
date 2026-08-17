@@ -47,6 +47,8 @@
   }
   #close:hover { color: #FFD9CF; }
 
+  #online .on { color: #8FBF7F; }
+  #online .off { color: #C08080; }
   #online {
     flex-shrink: 0;
     padding: 4px 8px;
@@ -73,7 +75,29 @@
     -webkit-app-region: no-drag;
     display: flex; gap: 5px; padding: 6px; flex-shrink: 0;
     border-top: 1px solid rgba(168,130,61,0.35);
+    position: relative;
   }
+  #emojiBtn {
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(168,130,61,0.5);
+    border-radius: 3px; cursor: pointer; flex-shrink: 0;
+    font-size: 14px; line-height: 1; padding: 4px 6px;
+  }
+  #emojiBtn:hover { background: rgba(255,255,255,0.22); }
+  #emojiPanel {
+    display: none;
+    position: absolute; bottom: calc(100% + 4px); right: 6px; z-index: 30;
+    width: 244px; max-height: 160px; overflow-y: auto;
+    flex-wrap: wrap; gap: 1px; padding: 6px;
+    background: rgba(24, 19, 14, 0.97);
+    border: 1px solid rgba(168,130,61,0.7); border-radius: 5px;
+  }
+  #emojiPanel.open { display: flex; }
+  #emojiPanel button {
+    width: 26px; height: 26px; font-size: 15px; line-height: 1;
+    background: transparent; border: none; border-radius: 3px; cursor: pointer;
+  }
+  #emojiPanel button:hover { background: rgba(255,255,255,0.15); }
   #msg {
     flex: 1; min-width: 0;
     background: rgba(255,255,255,0.12);
@@ -106,10 +130,13 @@
     <div id="online">Online: —</div>
     <div id="messages"><p class="empty">No messages yet.</p></div>
     <div id="inputRow">
+      <div id="emojiPanel"></div>
       <input type="text" id="msg" maxlength="500" placeholder="Message your group…" />
+      <button id="emojiBtn" title="Emoji">&#128512;</button>
       <button id="send">Send</button>
     </div>
   </div>
+  <script src="emoji.js"></script>
   <script src="chat-overlay.js"></script>
 </body>
 </html>

@@ -9,7 +9,9 @@
     error: '&#9888;',
     info: '&#128276;',
     update: '&#128260;',
-    aa: '&#128142;'
+    aa: '&#128142;',
+    d4: '&#9888;',
+    notable: '&#128481;'
   };
 
   // Each entry: an Audio object plus its own volume. Keyed by
@@ -19,7 +21,8 @@
     death: { audio: new Audio('sounds/kgb_dth.wav'), volume: 0.5 },
     aa: { audio: new Audio('sounds/aa_gained.wav'), volume: 0.65 },
     levelup: { audio: new Audio('sounds/level_up.mp3'), volume: 0.65 },
-    ding: { audio: new Audio('sounds/ding_level50.mp3'), volume: 0.8 }
+    ding: { audio: new Audio('sounds/ding_level50.mp3'), volume: 0.8 },
+    d4: { audio: new Audio('sounds/d4_reminder.wav'), volume: 0.6 }
   };
   Object.keys(SOUNDS).forEach(function (key) {
     SOUNDS[key].audio.volume = SOUNDS[key].volume;

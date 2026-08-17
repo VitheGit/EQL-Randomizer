@@ -225,20 +225,30 @@ function notify(title, body, kind) {
   sendToChatWindows('chat-system', sysEntry);
   try {
     const settings = loadSettings();
-    if (!settings.notificationsEnabled) return; // master switch — nothing shows at all, not even silently
+    if (!settings.notificationsEnabled) {
+      realtimeDebugLog('TOAST — suppressed, notificationsEnabled is off (title="' + title + '")');
+      return; // master switch — nothing shows at all, not even silently
+    }
     const win = getNotifyWindow();
     const soundsEnabled = settings.soundsEnabled;
     const notificationVolume = settings.notificationVolume;
     const send = function () {
-      win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle' });
-      if (!win.isVisible()) win.showInactive();
+      try {
+        win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle' });
+        if (!win.isVisible()) win.showInactive();
+        realtimeDebugLog('TOAST — sent to notify window (title="' + title + '" pos=' + (settings.notificationPosition || 'top-middle') + ')');
+      } catch (e2) {
+        realtimeDebugLog('TOAST — send FAILED: ' + (e2 && e2.message));
+      }
     };
     if (win.webContents.isLoading()) {
+      realtimeDebugLog('TOAST — notify window still loading, queued (title="' + title + '")');
       win.webContents.once('did-finish-load', send);
     } else {
       send();
     }
   } catch (e) {
+    realtimeDebugLog('TOAST — threw before sending: ' + (e && e.message));
     console.error('Custom notification failed:', e);
   }
 }
@@ -247,7 +257,7 @@ function notify(title, body, kind) {
 // keeps a short rolling buffer of chat — otherwise opening the overlay
 // mid-conversation would show an empty box.
 var chatHistory = [];
-var lastPresence = [];
+var lastPresence = { users: [], offline: [] };
 var CHAT_HISTORY_MAX = 100;
 function recordChat(entry) {
   chatHistory.push(entry);
@@ -405,6 +415,50 @@ const AA_GAIN_RE = /\]\s*You have gained an ability point!\s*You now have (\d+) 
 const ZONE_ENTER_RE = /\]\s*You have entered ([^.]+)\./;
 const ACHIEVEMENT_RE = /\]\s*You have completed achievement:\s*(.+?)\s*$/;
 
+// Notable kills. Two forms, because credit should go to everyone who
+// took part: "You have slain X!" is your own killing blow, while
+// "X has been slain by <someone>!" appears in your log when a partner
+// lands it. If both players run the app, each announces their own.
+const SELF_SLAIN_RE = /\]\s*You have slain (.+?)!/;
+const OTHER_SLAIN_RE = /\]\s*(.+?) has been slain by (.+?)!/;
+
+// Matched case-insensitively against the mob name.
+const NOTABLE_NPCS = [
+  'Lord Nagafen', 'Lady Vox', 'Master Yael', 'Phinigel Autropos', 'Cazic Thule',
+  'Dread', 'Terror', 'Fright', 'A dracoliche', 'Innoruuk, the Prince of Hate',
+  'Maestro of Rancor', 'Lord of Loathing', 'Lord of Ire', 'Master of Spite',
+  'Mistress of Scorn', 'High Priest M`kari', 'Magi P`tasa', 'Coercer T`vala',
+  'Grandmaster R`Tal', 'Ashenbone Broodmaster', 'Avatar of Abhorrence',
+  'Thunder Spirit Princess', 'Noble Dojorn', 'Protector of Sky', 'Gorgalosk',
+  'Keeper of Souls', 'The Spiroc Lord', 'Bazzt Zzzt', 'Sister of the Spire',
+  'Eye of Veeshan', 'Overseer of Air', 'The Hand of Veeshan'
+];
+const NOTABLE_LOOKUP = {};
+NOTABLE_NPCS.forEach(function (n) { NOTABLE_LOOKUP[n.toLowerCase()] = n; });
+
+// Returns the canonical name if this mob is notable, else null. Leading
+// articles are tolerated since the log sometimes includes them.
+function matchNotable(rawName) {
+  if (!rawName) return null;
+  var n = String(rawName).trim().replace(/\s+/g, ' ');
+  var direct = NOTABLE_LOOKUP[n.toLowerCase()];
+  if (direct) return direct;
+  var stripped = n.replace(/^(a|an|the)\s+/i, '');
+  return NOTABLE_LOOKUP[stripped.toLowerCase()] || null;
+}
+
+// Difficulty comes from the suffix on the most recent zone-entry line.
+const DIFFICULTY_BY_SUFFIX = {
+  'awakened': 1, 'adaptive': 2, 'fused': 3, 'refined': 4
+};
+function difficultyFromZone(zoneText) {
+  if (!zoneText) return null;
+  var m = zoneText.match(/\(([A-Za-z]+)\)\s*$/);
+  if (!m) return 0; // no suffix at all means Difficulty 0
+  var d = DIFFICULTY_BY_SUFFIX[m[1].toLowerCase()];
+  return typeof d === 'number' ? d : 0;
+}
+
 // EQ log lines are prefixed like "[Wed Jul 29 12:38:40 2026] ...".
 // Returns null for anything that doesn't parse, so callers can decide
 // how to treat an unknown timestamp rather than trusting a bad date.
@@ -450,6 +504,8 @@ var watchState = {
   // When the current character was rolled — used to ignore log history
   // belonging to a previous character that shared this log file.
   characterRolledAt: null,
+  // Difficulty of the zone most recently entered, for tagging kills.
+  currentDifficulty: null,
   // Guards against re-notifying about the same mismatch on every /who.
   lastMismatchNotifiedAt: 0
 };
@@ -651,6 +707,30 @@ function handleWhoLine(level, classStr, name) {
   }
 }
 
+// Announces a notable kill once. Both log forms can appear for the same
+// kill (your own blow plus the third-person line), so a short dedupe
+// window keeps it to a single announcement per mob.
+var recentNotableKills = {};
+var NOTABLE_DEDUPE_MS = 15000;
+
+function handleNotableKill(rawName) {
+  if (!watchState.characterActive) return;
+  var canonical = matchNotable(rawName);
+  if (!canonical) return;
+
+  var now = Date.now();
+  var last = recentNotableKills[canonical];
+  if (last && now - last < NOTABLE_DEDUPE_MS) return;
+  recentNotableKills[canonical] = now;
+
+  var diff = watchState.currentDifficulty;
+  var suffix = (typeof diff === 'number') ? (' on Difficulty ' + diff) : '';
+  var who = watchState.characterName || 'You';
+
+  notify('Notable Kill!', who + ' has defeated ' + canonical + suffix + '!', 'notable');
+  submitMilestone('notable', { npc: canonical, difficulty: (typeof diff === 'number' ? diff : null) });
+}
+
 function processLogLine(line) {
   // ANY in-game activity is a chance to notice and repair a stale shared
   // view (a cleared log, or level-ups missed while the app was closed).
@@ -705,6 +785,9 @@ function processLogLine(line) {
   const zoneMatch = line.match(ZONE_ENTER_RE);
   if (zoneMatch) {
     var zoneName = zoneMatch[1].trim();
+    // Recorded for every zone change, not just D4 characters — notable
+    // kills are tagged with whatever difficulty the zone was.
+    watchState.currentDifficulty = difficultyFromZone(zoneName);
     realtimeDebugLog('ZONE — regex matched, zone="' + zoneName + '" characterActive=' + watchState.characterActive + ' characterD4=' + watchState.characterD4);
     if (watchState.characterActive && watchState.characterD4) {
       // "(Refined)" in the zone name means it's already a D4 zone — no
@@ -712,13 +795,30 @@ function processLogLine(line) {
       if (zoneName.indexOf('(Refined)') === -1) {
         // Purely local — a reminder for the person playing, not a group
         // event, so this never touches the backend or broadcasts to anyone.
-        notify('D4 Reminder', "Don't forget to change to D4 difficulty!", 'info');
+        notify('D4 Reminder', "Don't forget to change to D4 difficulty!", 'd4');
         realtimeDebugLog('ZONE — D4 reminder notification fired');
       } else {
         realtimeDebugLog('ZONE — skipped, zone already (Refined)');
       }
     }
     return;
+  }
+
+  // Notable kills. Checked before the player-death branch below, since
+  // both involve "slain" wording and we want the mob case handled first.
+  var selfSlain = line.match(SELF_SLAIN_RE);
+  if (selfSlain) {
+    handleNotableKill(selfSlain[1]);
+    return;
+  }
+  var otherSlain = line.match(OTHER_SLAIN_RE);
+  if (otherSlain) {
+    // "X has been slain by Y" — only a kill if X is the notable mob.
+    // When X is a player (a real death), matchNotable returns null and
+    // this falls through harmlessly.
+    if (matchNotable(otherSlain[1])) handleNotableKill(otherSlain[1]);
+    // Deliberately no early return: a player death line can also match
+    // this shape, and the death handling below still needs to run.
   }
 
   const deathMatch = line.match(SELF_DEATH_RE);
@@ -804,7 +904,7 @@ function connectRealtime() {
     }
 
     if (msg && msg.type === 'presence') {
-      lastPresence = msg.users || [];
+      lastPresence = { users: msg.users || [], offline: msg.offline || [] };
       sendToChatWindows('chat-presence', lastPresence);
       return;
     }
@@ -839,8 +939,10 @@ function connectRealtime() {
     realtimeDebugLog('CLOSE — code=' + code + ' reason=' + (reason ? reason.toString() : '(none)'));
     // Without a connection we can't know who's online — show nobody
     // rather than a stale list.
-    lastPresence = [];
-    sendToChatWindows('chat-presence', []);
+    // Connection lost — we can't know who's online, but the known-member
+    // list is still meaningful, so keep showing them as offline.
+    lastPresence = { users: [], offline: (lastPresence && lastPresence.offline) || [] };
+    sendToChatWindows('chat-presence', lastPresence);
     if (realtimeSocket === ws) realtimeSocket = null;
     if (!realtimeIntentionalClose) scheduleRealtimeReconnect();
   });
@@ -980,6 +1082,9 @@ async function pollSharedLogInner() {
           notify('Level 50!', entry.name + ' reached level 50!', 'ding');
         } else if (entry.type === 'levelup') {
           notify('Level Up!', entry.name + ' reached level ' + entry.level + '.', 'levelup');
+        } else if (entry.type === 'notable') {
+          notify('Notable Kill!', entry.name + ' has defeated ' + entry.npc +
+            (typeof entry.difficulty === 'number' ? ' on Difficulty ' + entry.difficulty : '') + '!', 'notable');
         } else if (entry.type === 'achievement') {
           chatAnnounce(entry.name + ' has earned an achievement! - ' + entry.achievement, 'achievement');
         } else if (entry.type === 'aa') {
@@ -1293,7 +1398,7 @@ function createChatOverlay() {
     // Seed it with what's already happened so it isn't blank.
     chatOverlayWindow.webContents.send('chat-history', {
       messages: chatHistory,
-      users: lastPresence,
+      presence: lastPresence,
       username: loadSettings().username || '',
       chatColor: loadSettings().chatColor || '#2A2016'
     });
