@@ -215,13 +215,16 @@ function chatAnnounce(text, kind) {
   sendToChatWindows('chat-system', entry);
 }
 
-function notify(title, body, kind) {
+function notify(title, body, kind, meta) {
   // Mirror into the group chat as a system line. Done here so EVERY
   // notification path is covered automatically, and deliberately before
   // the notificationsEnabled check — turning off popups shouldn't also
   // blank out the chat history of what happened.
-  var sysEntry = { title: title, body: body, kind: kind || 'info', time: new Date().toISOString() };
-  recordChat({ system: true, text: title + (body ? ' — ' + body : ''), time: sysEntry.time, kind: sysEntry.kind });
+  //
+  // `meta` carries structured bits (e.g. the NPC name) so a renderer can
+  // style part of the message instead of treating it as one flat string.
+  var sysEntry = { title: title, body: body, kind: kind || 'info', time: new Date().toISOString(), meta: meta || null };
+  recordChat({ system: true, text: title + (body ? ' — ' + body : ''), time: sysEntry.time, kind: sysEntry.kind, meta: meta || null });
   sendToChatWindows('chat-system', sysEntry);
   try {
     const settings = loadSettings();
@@ -234,7 +237,7 @@ function notify(title, body, kind) {
     const notificationVolume = settings.notificationVolume;
     const send = function () {
       try {
-        win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle' });
+        win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle', meta: meta || null });
         if (!win.isVisible()) win.showInactive();
         realtimeDebugLog('TOAST — sent to notify window (title="' + title + '" pos=' + (settings.notificationPosition || 'top-middle') + ')');
       } catch (e2) {
@@ -258,6 +261,8 @@ function notify(title, body, kind) {
 // mid-conversation would show an empty box.
 var chatHistory = [];
 var lastPresence = { users: [], offline: [] };
+// Name -> chosen chat color, learned from presence broadcasts.
+var chatColorsByUser = {};
 var CHAT_HISTORY_MAX = 100;
 function recordChat(entry) {
   chatHistory.push(entry);
@@ -394,6 +399,10 @@ async function submitMilestone(type, extra) {
     if (!res.ok) {
       const data = await res.json().catch(function () { return null; });
       console.error('Milestone submit failed:', data);
+      realtimeDebugLog('MILESTONE — submit FAILED type=' + type + ' status=' + res.status +
+        ' body=' + JSON.stringify(body) + ' response=' + JSON.stringify(data));
+    } else {
+      realtimeDebugLog('MILESTONE — submitted ok type=' + type + ' ' + JSON.stringify(extra || {}));
     }
   } catch (e) {
     console.error('Milestone submit network error:', e);
@@ -515,10 +524,32 @@ var watchState = {
 // has logged in and told us WHEN the character was rolled, so the first
 // pass has no cutoff and can pick up a previous character's level-ups
 // from the same log file. Re-running once rolledAt is known corrects it.
-function recoverLevelFromLog() {
+// The zone you're standing in doesn't change just because the app
+// restarted, but currentDifficulty lives only in memory — so without
+// this, a notable kill after a restart reports no difficulty until you
+// happen to zone again. Scans backwards for the most recent zone entry.
+function recoverDifficultyFromLog(preloadedContent) {
   if (!watchState.logPath) return;
   try {
-    const content = fs.readFileSync(watchState.logPath, 'utf8');
+    const content = preloadedContent != null ? preloadedContent : fs.readFileSync(watchState.logPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = lines[i].match(ZONE_ENTER_RE);
+      if (m) {
+        watchState.currentDifficulty = difficultyFromZone(m[1].trim());
+        realtimeDebugLog('ZONE — recovered difficulty ' + watchState.currentDifficulty + ' from "' + m[1].trim() + '"');
+        return;
+      }
+    }
+  } catch (e) {
+    // Non-fatal — difficulty just stays unknown until the next zone.
+  }
+}
+
+function recoverLevelFromLog(preloadedContent) {
+  if (!watchState.logPath) return;
+  try {
+    const content = preloadedContent != null ? preloadedContent : fs.readFileSync(watchState.logPath, 'utf8');
     const rolledAt = watchState.characterRolledAt ? new Date(watchState.characterRolledAt) : null;
     const lines = content.split(/\r?\n/);
     let recovered = null;
@@ -570,7 +601,12 @@ function startLogWatching(logPath, characterName) {
     // file, so the previous character's level-ups are still sitting in
     // there — without this cutoff, a fresh level 1 would inherit the
     // dead character's level and report the wrong one on death.
-    recoverLevelFromLog();
+    // One read, shared by both recovery passes — these used to read the
+    // whole file separately.
+    var startupContent = null;
+    try { startupContent = fs.readFileSync(logPath, 'utf8'); } catch (e) { /* handled below */ }
+    recoverLevelFromLog(startupContent);
+    recoverDifficultyFromLog(startupContent);
   } catch (e) {
     watchState.lastSize = 0;
     notify('Log File Not Found', 'Could not open the log file at the configured path. Check Settings.', 'error');
@@ -713,6 +749,67 @@ function handleWhoLine(level, classStr, name) {
 var recentNotableKills = {};
 var NOTABLE_DEDUPE_MS = 15000;
 
+// When a group kills a notable NPC together, each player's app submits
+// its own entry (everyone keeps individual credit in the log and on the
+// leaderboard) — but announcing three separate popups for one kill is
+// noise. So an announcement is held briefly to collect any other players
+// credited with the same NPC, then fired once with all their names.
+//
+// The wait is necessary because groupmates' kills arrive via the shared
+// log poll rather than simultaneously. It only delays notable kills,
+// which are rare; deaths and level-ups still fire immediately.
+var NOTABLE_COMBINE_MS = 9000;
+var pendingNotable = {}; // key -> { npc, difficulty, players[], colors{}, timer }
+
+function notableKey(npc, difficulty) {
+  return npc + '|' + (typeof difficulty === 'number' ? difficulty : 'x');
+}
+
+function queueNotableAnnouncement(npc, difficulty, playerName, playerColor) {
+  var key = notableKey(npc, difficulty);
+  var entry = pendingNotable[key];
+  if (!entry) {
+    entry = pendingNotable[key] = {
+      npc: npc,
+      difficulty: (typeof difficulty === 'number' ? difficulty : null),
+      players: [],
+      colors: {},
+      timer: null
+    };
+  }
+  if (entry.players.indexOf(playerName) === -1) entry.players.push(playerName);
+  if (playerColor) entry.colors[playerName] = playerColor;
+
+  // Restart the window each time someone new is added, so a straggler
+  // still makes it into the same announcement.
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(function () { flushNotableAnnouncement(key); }, NOTABLE_COMBINE_MS);
+}
+
+function formatPlayerList(names) {
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return names[0] + ' and ' + names[1];
+  return names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1];
+}
+
+function flushNotableAnnouncement(key) {
+  var entry = pendingNotable[key];
+  if (!entry) return;
+  delete pendingNotable[key];
+
+  var names = entry.players;
+  var verb = names.length === 1 ? ' has defeated ' : ' have defeated ';
+  var suffix = (typeof entry.difficulty === 'number') ? (' on Difficulty ' + entry.difficulty) : '';
+
+  realtimeDebugLog('NOTABLE — announcing with ' + names.length + ' player(s): ' + names.join(', '));
+  notify('Notable Kill!', formatPlayerList(names) + verb + entry.npc + suffix + '!', 'notable', {
+    npc: entry.npc,
+    difficulty: entry.difficulty,
+    players: names,
+    playerColors: entry.colors
+  });
+}
+
 function handleNotableKill(rawName) {
   if (!watchState.characterActive) return;
   var canonical = matchNotable(rawName);
@@ -724,11 +821,12 @@ function handleNotableKill(rawName) {
   recentNotableKills[canonical] = now;
 
   var diff = watchState.currentDifficulty;
-  var suffix = (typeof diff === 'number') ? (' on Difficulty ' + diff) : '';
   var who = watchState.characterName || 'You';
 
-  notify('Notable Kill!', who + ' has defeated ' + canonical + suffix + '!', 'notable');
+  // Submit immediately so groupmates see it as soon as possible; only the
+  // local announcement waits.
   submitMilestone('notable', { npc: canonical, difficulty: (typeof diff === 'number' ? diff : null) });
+  queueNotableAnnouncement(canonical, diff, who, loadSettings().chatColor || null);
 }
 
 function processLogLine(line) {
@@ -885,7 +983,7 @@ function connectRealtime() {
     realtimeDebugLog('OPEN — connection established');
     // Announce ourselves so the room broadcasts an updated presence
     // roster that includes us.
-    try { ws.send(JSON.stringify({ type: 'hello' })); } catch (e) { /* ignore */ }
+    try { ws.send(JSON.stringify({ type: 'hello', color: loadSettings().chatColor || null })); } catch (e) { /* ignore */ }
     realtimeReconnectDelay = 2000; // reset backoff on a successful connection
     // Reconnecting (or connecting for the first time) might mean we
     // missed something — do one immediate check to catch up.
@@ -904,6 +1002,7 @@ function connectRealtime() {
     }
 
     if (msg && msg.type === 'presence') {
+      chatColorsByUser = msg.colors || {};
       lastPresence = { users: msg.users || [], offline: msg.offline || [] };
       sendToChatWindows('chat-presence', lastPresence);
       return;
@@ -1083,8 +1182,11 @@ async function pollSharedLogInner() {
         } else if (entry.type === 'levelup') {
           notify('Level Up!', entry.name + ' reached level ' + entry.level + '.', 'levelup');
         } else if (entry.type === 'notable') {
-          notify('Notable Kill!', entry.name + ' has defeated ' + entry.npc +
-            (typeof entry.difficulty === 'number' ? ' on Difficulty ' + entry.difficulty : '') + '!', 'notable');
+          // Joins the same pending announcement as any local kill of the
+          // same NPC, so a group effort produces one combined message.
+          realtimeDebugLog('NOTABLE — received from group: ' + entry.name + ' / ' + entry.npc + ' / D' + entry.difficulty);
+          queueNotableAnnouncement(entry.npc, entry.difficulty, entry.name,
+            chatColorsByUser[entry.name] || null);
         } else if (entry.type === 'achievement') {
           chatAnnounce(entry.name + ' has earned an achievement! - ' + entry.achievement, 'achievement');
         } else if (entry.type === 'aa') {
@@ -1128,14 +1230,31 @@ ipcMain.handle('load-settings', function () {
 });
 
 ipcMain.handle('save-settings', function (event, newSettings) {
-  const merged = Object.assign({}, loadSettings(), newSettings || {});
+  const prev = loadSettings();
+  const merged = Object.assign({}, prev, newSettings || {});
   saveSettingsToDisk(merged);
-  if (merged.logFilePath && merged.characterName) {
-    startLogWatching(merged.logFilePath, merged.characterName);
-  } else {
-    stopLogWatching();
+
+  // Only (re)start log watching when the inputs that define it actually
+  // change, or when it isn't running yet. Restarting re-reads the whole
+  // log file, which on a large log is slow enough to visibly freeze the
+  // UI — and unrelated saves (picking a chat color, moving a slider)
+  // were paying that cost every time.
+  const watchInputsChanged = merged.logFilePath !== prev.logFilePath ||
+    merged.characterName !== prev.characterName;
+  const notWatchingYet = !watchState.timer;
+  if (watchInputsChanged || notWatchingYet) {
+    if (merged.logFilePath && merged.characterName) {
+      startLogWatching(merged.logFilePath, merged.characterName);
+    } else {
+      stopLogWatching();
+    }
   }
   connectRealtime();
+  // Tell the room about a color change right away, so other people's
+  // views update without waiting for a reconnect.
+  if (newSettings && newSettings.chatColor && realtimeSocket && realtimeSocket.readyState === WebSocket.OPEN) {
+    try { realtimeSocket.send(JSON.stringify({ type: 'setcolor', color: newSettings.chatColor })); } catch (e) { /* ignore */ }
+  }
   // If the notify window already exists, move it now rather than making
   // the user restart the app to see a position change take effect.
   if (notifyWindow && !notifyWindow.isDestroyed()) {

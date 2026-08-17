@@ -22,7 +22,8 @@
     aa: { audio: new Audio('sounds/aa_gained.wav'), volume: 0.65 },
     levelup: { audio: new Audio('sounds/level_up.mp3'), volume: 0.65 },
     ding: { audio: new Audio('sounds/ding_level50.mp3'), volume: 0.8 },
-    d4: { audio: new Audio('sounds/d4_reminder.wav'), volume: 0.6 }
+    d4: { audio: new Audio('sounds/d4_reminder.wav'), volume: 0.6 },
+    notable: { audio: new Audio('sounds/notable_kill.wav'), volume: 0.75 }
   };
   Object.keys(SOUNDS).forEach(function (key) {
     SOUNDS[key].audio.volume = SOUNDS[key].volume;
@@ -43,6 +44,54 @@
       s.audio.currentTime = 0;
       s.audio.play().catch(function () { /* browser autoplay quirks — not worth surfacing to the user */ });
     } catch (e) { /* ignore playback errors */ }
+  }
+
+  // Wraps a known substring (the NPC name on notable kills) after
+  // Wraps known substrings (the NPC name, and the "Difficulty N" tag) so
+  // each can be styled. Ranges are collected against the ESCAPED text and
+  // applied in order, so inserting markup for one can't shift the offsets
+  // of the other.
+  function highlightMeta(text, meta) {
+    var safe = escapeHtml(text);
+    if (!meta) return safe;
+
+    var ranges = [];
+    function addRange(needleRaw, cls, inlineColor) {
+      if (!needleRaw) return;
+      var needle = escapeHtml(needleRaw);
+      var idx = safe.indexOf(needle);
+      if (idx === -1) return;
+      ranges.push({ start: idx, end: idx + needle.length, cls: cls, color: inlineColor || null });
+    }
+
+    // The player's own chosen chat color is applied inline, since it's a
+    // per-person value rather than one of a fixed set of classes.
+    // A kill can credit several players, so colour each name with that
+    // person's own choice. Single-player kills still use meta.player.
+    if (meta.players && meta.players.length) {
+      meta.players.forEach(function (name) {
+        addRange(name, 'player', (meta.playerColors || {})[name] || null);
+      });
+    } else {
+      addRange(meta.player, 'player', meta.playerColor);
+    }
+    addRange(meta.npc, 'npc');
+    if (typeof meta.difficulty === 'number') {
+      addRange('Difficulty ' + meta.difficulty, 'diff diff-' + meta.difficulty);
+    }
+    if (!ranges.length) return safe;
+
+    ranges.sort(function (a, b) { return a.start - b.start; });
+    var out = '';
+    var cursor = 0;
+    ranges.forEach(function (r) {
+      if (r.start < cursor) return; // overlapping — skip rather than corrupt
+      var style = r.color ? ' style="color:' + escapeHtml(r.color) + ';"' : '';
+      out += safe.slice(cursor, r.start) +
+        '<span class="' + r.cls + '"' + style + '>' + safe.slice(r.start, r.end) + '</span>';
+      cursor = r.end;
+    });
+    return out + safe.slice(cursor);
   }
 
   function escapeHtml(str) {
@@ -73,7 +122,7 @@
     el.id = id;
     el.innerHTML =
       '<p class="title">' + icon + ' ' + escapeHtml(payload.title || 'EQ Legends Randomizer') + '</p>' +
-      '<p class="body">' + escapeHtml(payload.body || '') + '</p>';
+      '<p class="body">' + highlightMeta(payload.body || '', payload.meta) + '</p>';
     stack.appendChild(el);
 
     // Force a reflow so the show transition actually animates in.

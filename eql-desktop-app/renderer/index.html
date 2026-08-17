@@ -219,6 +219,19 @@
   /* Achievements get their own tone so they stand out from the
      death/ding/level-up system lines. */
   .chat-achievement .chat-text { color: #9A7B12; font-weight: 600; }
+  /* Notable kills — bright green, darkened just enough to stay legible
+     against the light parchment background. */
+  .chat-notable .chat-text { color: #1F8F3D; font-weight: 700; font-style: normal; }
+  .chat-notable .chat-npc { color: #C0281E; font-weight: 800; }
+  .chat-notable .chat-player { font-weight: 800; }
+  /* Difficulty tag, colored by tier. D0 matches the surrounding green;
+     D4 is a brighter red than the NPC name so it reads as the top tier. */
+  .chat-notable .chat-diff { font-weight: 800; }
+  .chat-notable .chat-diff-0 { color: #1F8F3D; }
+  .chat-notable .chat-diff-1 { color: #B8901A; }
+  .chat-notable .chat-diff-2 { color: #C2621A; }
+  .chat-notable .chat-diff-3 { color: #7A3FA8; }
+  .chat-notable .chat-diff-4 { color: #E8301F; }
   .chat-input-row { display: flex; gap: 8px; position: relative; }
   .chat-emoji-btn {
     flex-shrink: 0; width: 34px; padding: 0; font-size: 16px; line-height: 1;

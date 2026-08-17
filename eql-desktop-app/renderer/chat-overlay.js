@@ -15,6 +15,108 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  // Wraps a known substring (the NPC name) after escaping, so it can be
+  // Wraps known substrings (the NPC name, and the "Difficulty N" tag) so
+  // each can be styled. Ranges are collected against the ESCAPED text and
+  // applied in order, so inserting markup for one can't shift the offsets
+  // of the other.
+  function highlightMeta(text, meta) {
+    var safe = escapeHtml(text);
+    if (!meta) return safe;
+
+    var ranges = [];
+    function addRange(needleRaw, cls, inlineColor) {
+      if (!needleRaw) return;
+      var needle = escapeHtml(needleRaw);
+      var idx = safe.indexOf(needle);
+      if (idx === -1) return;
+      ranges.push({ start: idx, end: idx + needle.length, cls: cls, color: inlineColor || null });
+    }
+
+    // The player's own chosen chat color is applied inline, since it's a
+    // per-person value rather than one of a fixed set of classes.
+    // A kill can credit several players, so colour each name with that
+    // person's own choice. Single-player kills still use meta.player.
+    if (meta.players && meta.players.length) {
+      meta.players.forEach(function (name) {
+        addRange(name, 'player', (meta.playerColors || {})[name] || null);
+      });
+    } else {
+      addRange(meta.player, 'player', meta.playerColor);
+    }
+    addRange(meta.npc, 'npc');
+    if (typeof meta.difficulty === 'number') {
+      addRange('Difficulty ' + meta.difficulty, 'diff diff-' + meta.difficulty);
+    }
+    if (!ranges.length) return safe;
+
+    ranges.sort(function (a, b) { return a.start - b.start; });
+    var out = '';
+    var cursor = 0;
+    ranges.forEach(function (r) {
+      if (r.start < cursor) return; // overlapping — skip rather than corrupt
+      var style = r.color ? ' style="color:' + escapeHtml(r.color) + ';"' : '';
+      out += safe.slice(cursor, r.start) +
+        '<span class="' + r.cls + '"' + style + '>' + safe.slice(r.start, r.end) + '</span>';
+      cursor = r.end;
+    });
+    return out + safe.slice(cursor);
+  }
+
+  // The name-color palette was picked to read against the light parchment
+  // of the main window. Several of those colors (Ink especially) all but
+  // vanish on this dark panel, so each one is lifted to a minimum
+  // lightness — and slightly desaturated at the top end so it doesn't
+  // glow — while keeping its hue. Someone's blue still reads as blue,
+  // just a lighter blue than they see in the main window.
+  var MIN_LIGHTNESS = 0.62;
+
+  function lightenForDark(hex) {
+    if (!hex || typeof hex !== 'string') return null;
+    var m = hex.replace('#', '').trim();
+    if (m.length === 3) m = m[0] + m[0] + m[1] + m[1] + m[2] + m[2];
+    if (!/^[0-9a-fA-F]{6}$/.test(m)) return null;
+
+    var r = parseInt(m.slice(0, 2), 16) / 255;
+    var g = parseInt(m.slice(2, 4), 16) / 255;
+    var b = parseInt(m.slice(4, 6), 16) / 255;
+
+    var max = Math.max(r, g, b), min = Math.min(r, g, b);
+    var l = (max + min) / 2;
+    var h = 0, s = 0;
+    if (max !== min) {
+      var d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+    }
+
+    if (l >= MIN_LIGHTNESS) return hex; // already bright enough
+    l = MIN_LIGHTNESS;
+    s = Math.min(s, 0.7);
+
+    function hue2rgb(p, q, t) {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    }
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+    var rr = s === 0 ? l : hue2rgb(p, q, h + 1 / 3);
+    var gg = s === 0 ? l : hue2rgb(p, q, h);
+    var bb = s === 0 ? l : hue2rgb(p, q, h - 1 / 3);
+
+    function toHex(v) {
+      var n = Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16);
+      return n.length === 1 ? '0' + n : n;
+    }
+    return '#' + toHex(rr) + toHex(gg) + toHex(bb);
+  }
+
   function formatTime(iso) {
     try {
       var d = new Date(iso);
@@ -37,13 +139,15 @@
     messagesEl.innerHTML = messages.map(function (m) {
       var t = '<span class="time">' + escapeHtml(formatTime(m.time)) + '</span>';
       if (m.system) {
-        var sysClass = 'line system' + (m.kind === 'achievement' ? ' achievement' : '');
-        return '<div class="' + sysClass + '">' + t + '<span class="text">' + escapeHtml(m.text) + '</span></div>';
+        var sysClass = 'line system' + (m.kind === 'achievement' ? ' achievement'
+          : m.kind === 'notable' ? ' notable' : '');
+        return '<div class="' + sysClass + '">' + t + '<span class="text">' + highlightMeta(m.text, m.meta) + '</span></div>';
       }
-      // Colors chosen for the light main window can be too dark against
-      // this dark panel, so names render in a consistently readable tint
-      // rather than the sender's exact palette color.
-      var nameStyle = m.from === myUsername ? ' style="color:#E8A87C;"' : ' style="color:#C9B98F;"';
+      // Use the sender's chosen color, lifted to stay readable here.
+      // Falls back to the old neutral tints when no color is known.
+      var lifted = lightenForDark(m.color);
+      var fallback = m.from === myUsername ? '#E8A87C' : '#C9B98F';
+      var nameStyle = ' style="color:' + escapeHtml(lifted || fallback) + ';"';
       return '<div class="line">' + t +
         '<span class="from"' + nameStyle + '>' + escapeHtml(m.from) + ':</span>' +
         '<span class="text">' + escapeHtml(m.text) + '</span></div>';
@@ -127,7 +231,7 @@
   });
 
   window.eqlOverlay.onChatSystem(function (payload) {
-    push({ system: true, text: payload.title + (payload.body ? ' — ' + payload.body : ''), time: payload.time, kind: payload.kind });
+    push({ system: true, text: payload.title + (payload.body ? ' — ' + payload.body : ''), time: payload.time, kind: payload.kind, meta: payload.meta });
   });
 
   window.eqlOverlay.onChatPresence(function (payload) {

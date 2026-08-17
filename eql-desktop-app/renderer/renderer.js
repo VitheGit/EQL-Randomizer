@@ -755,9 +755,11 @@
       : state.chatMessages.map(function (m) {
           var t = formatChatTime(m.time);
           if (m.system) {
-            return '<div class="chat-line chat-system' + (m.kind === 'achievement' ? ' chat-achievement' : '') + '">' +
+            var kindClass = m.kind === 'achievement' ? ' chat-achievement'
+              : m.kind === 'notable' ? ' chat-notable' : '';
+            return '<div class="chat-line chat-system' + kindClass + '">' +
               '<span class="chat-time">' + escapeHtml(t) + '</span>' +
-              '<span class="chat-text">' + escapeHtml(m.text) + '</span>' +
+              '<span class="chat-text">' + highlightMeta(m.text, m.meta) + '</span>' +
             '</div>';
           }
           var colorAttr = m.color ? ' style="color:' + escapeHtml(m.color) + ';"' : '';
@@ -822,6 +824,55 @@
         '</button>' +
       '</div>' +
     '</div>';
+  }
+
+  // Escapes the message, then wraps a known substring (currently the NPC
+  // name on notable kills) so it can be styled. Both the haystack and the
+  // Wraps known substrings (the NPC name, and the "Difficulty N" tag) so
+  // each can be styled. Ranges are collected against the ESCAPED text and
+  // applied in order, so inserting markup for one can't shift the offsets
+  // of the other.
+  function highlightMeta(text, meta) {
+    var safe = escapeHtml(text);
+    if (!meta) return safe;
+
+    var ranges = [];
+    function addRange(needleRaw, cls, inlineColor) {
+      if (!needleRaw) return;
+      var needle = escapeHtml(needleRaw);
+      var idx = safe.indexOf(needle);
+      if (idx === -1) return;
+      ranges.push({ start: idx, end: idx + needle.length, cls: cls, color: inlineColor || null });
+    }
+
+    // The player's own chosen chat color is applied inline, since it's a
+    // per-person value rather than one of a fixed set of classes.
+    // A kill can credit several players, so colour each name with that
+    // person's own choice. Single-player kills still use meta.player.
+    if (meta.players && meta.players.length) {
+      meta.players.forEach(function (name) {
+        addRange(name, 'chat-player', (meta.playerColors || {})[name] || null);
+      });
+    } else {
+      addRange(meta.player, 'chat-player', meta.playerColor);
+    }
+    addRange(meta.npc, 'chat-npc');
+    if (typeof meta.difficulty === 'number') {
+      addRange('Difficulty ' + meta.difficulty, 'chat-diff chat-diff-' + meta.difficulty);
+    }
+    if (!ranges.length) return safe;
+
+    ranges.sort(function (a, b) { return a.start - b.start; });
+    var out = '';
+    var cursor = 0;
+    ranges.forEach(function (r) {
+      if (r.start < cursor) return; // overlapping — skip rather than corrupt
+      var style = r.color ? ' style="color:' + escapeHtml(r.color) + ';"' : '';
+      out += safe.slice(cursor, r.start) +
+        '<span class="' + r.cls + '"' + style + '>' + safe.slice(r.start, r.end) + '</span>';
+      cursor = r.end;
+    });
+    return out + safe.slice(cursor);
   }
 
   function formatChatTime(iso) {
@@ -1748,7 +1799,7 @@
     // Notifications double as a shared record of what happened, so they
     // land in the chat transcript too.
     var text = payload.title + (payload.body ? ' — ' + payload.body : '');
-    pushChatMessage({ system: true, text: text, time: payload.time, kind: payload.kind });
+    pushChatMessage({ system: true, text: text, time: payload.time, kind: payload.kind, meta: payload.meta });
     render();
   });
 

@@ -190,11 +190,17 @@ export class GroupRoom {
       return;
     }
 
-    if (data.type === 'hello') {
-      // Sent by a client once its socket is genuinely open. Using this
-      // rather than broadcasting at accept-time avoids a race where the
-      // roster goes out before the new client can receive it.
-      await this.touchMember(att.username);
+    if (data.type === 'hello' || data.type === 'setcolor') {
+      // 'hello' is sent once a client's socket is genuinely open (using
+      // this rather than broadcasting at accept-time avoids a race where
+      // the roster goes out before the new client can receive it).
+      // 'setcolor' arrives when someone changes their name color, so
+      // everyone's view updates without needing a reconnect.
+      if (CHAT_COLORS.indexOf(data.color) !== -1) {
+        att.color = data.color;
+        ws.serializeAttachment(att);
+      }
+      if (data.type === 'hello') await this.touchMember(att.username);
       await this.broadcastRoster();
       return;
     }
@@ -314,7 +320,18 @@ export class GroupRoom {
       .filter(function (m) { return online.indexOf(m) === -1; })
       .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
 
-    this.broadcast(JSON.stringify({ type: 'presence', users: online, offline: offline }));
+    // Colors of everyone currently connected, so clients can render a
+    // player's name in their chosen color anywhere it appears — not just
+    // on their own chat messages.
+    const colors = {};
+    this.state.getWebSockets().forEach(function (ws) {
+      try {
+        const a = ws.deserializeAttachment();
+        if (a && a.username && a.color) colors[a.username] = a.color;
+      } catch (e) { /* skip */ }
+    });
+
+    this.broadcast(JSON.stringify({ type: 'presence', users: online, offline: offline, colors: colors }));
   }
 
   broadcast(message) {
