@@ -24,3 +24,9 @@ export function logKeyFor(user) {
 export function resetKeyFor(user) {
   return 'leaderboard-reset-at:' + groupKeyFor(user);
 }
+
+// Holds a copy of the log taken immediately before a clear, so an
+// accidental wipe can be undone. Only the most recent clear is kept.
+export function backupKeyFor(user) {
+  return 'log-backup:' + groupKeyFor(user);
+}

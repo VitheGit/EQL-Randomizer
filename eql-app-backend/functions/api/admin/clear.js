@@ -1,6 +1,9 @@
 import { getUsernameFromRequest } from '../../_lib/auth-crypto.js';
 import { getUser } from '../../_lib/auth-users.js';
-import { logKeyFor, resetKeyFor, normalizeGroup } from '../../_lib/groups.js';
+import { logKeyFor, resetKeyFor, backupKeyFor, normalizeGroup } from '../../_lib/groups.js';
+
+// How long before the same target can be cleared again.
+const CLEAR_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 import { broadcastEntry } from '../../_lib/broadcast.js';
 
 function json(body, status) {
@@ -47,7 +50,49 @@ export async function onRequestPost(context) {
   const now = new Date().toISOString();
   const clearedEntry = { type: 'cleared', target: target, time: now, name: username };
 
+  // Read the current log once — used for the cooldown check below, and
+  // (for a log clear) as the backup contents.
+  const existingRaw = await env.EQL_KV.get(logKeyFor(user));
+  const existingLog = existingRaw ? JSON.parse(existingRaw) : [];
+
+  // Cooldown, so a confused or impatient user can't spam clears and
+  // burn through write quota. Derived from the audit entry the previous
+  // clear already left behind, so enforcing this costs no extra storage
+  // and no extra reads or writes.
+  let lastClearAt = null;
+  for (let i = existingLog.length - 1; i >= 0; i--) {
+    const e = existingLog[i];
+    if (e && e.type === 'cleared' && e.target === target) {
+      lastClearAt = e.time;
+      break;
+    }
+  }
+  if (lastClearAt) {
+    const sinceMs = Date.parse(now) - Date.parse(lastClearAt);
+    if (Number.isFinite(sinceMs) && sinceMs >= 0 && sinceMs < CLEAR_COOLDOWN_MS) {
+      const waitSeconds = Math.ceil((CLEAR_COOLDOWN_MS - sinceMs) / 1000);
+      const waitLabel = waitSeconds >= 60
+        ? Math.ceil(waitSeconds / 60) + ' minute' + (Math.ceil(waitSeconds / 60) === 1 ? '' : 's')
+        : waitSeconds + ' seconds';
+      return json({
+        error: 'This was cleared very recently. Please wait ' + waitLabel + ' before clearing again.'
+      }, 429);
+    }
+  }
+
   if (target === 'log') {
+    // Keep a copy before wiping, since this is the only genuinely
+    // destructive action in the app and there's otherwise no way back.
+    // Only the most recent clear is retained — enough to undo a mistake
+    // without the backups themselves becoming unbounded storage.
+    if (existingLog.length) {
+      await env.EQL_KV.put(backupKeyFor(user), JSON.stringify({
+        backedUpAt: now,
+        clearedBy: username,
+        entryCount: existingLog.length,
+        log: existingLog
+      }));
+    }
     // The log is fully replaced — just the one audit entry remains.
     await env.EQL_KV.put(logKeyFor(user), JSON.stringify([clearedEntry]));
   } else {
@@ -56,10 +101,8 @@ export async function onRequestPost(context) {
     // doesn't touch the Adventure Log's history, so the audit entry is
     // appended rather than replacing anything.
     await env.EQL_KV.put(resetKeyFor(user), now);
-    const logRaw = await env.EQL_KV.get(logKeyFor(user));
-    const log = logRaw ? JSON.parse(logRaw) : [];
-    log.push(clearedEntry);
-    await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
+    existingLog.push(clearedEntry);
+    await env.EQL_KV.put(logKeyFor(user), JSON.stringify(existingLog));
   }
   context.waitUntil(broadcastEntry(env, username, user.group, clearedEntry));
 

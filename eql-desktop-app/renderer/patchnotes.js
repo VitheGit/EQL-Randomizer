@@ -3,6 +3,14 @@
 (function () {
   window.EQL_PATCH_NOTES = [
     {
+      version: '1.1.14',
+      notes: [
+        'Clearing the Adventure Log now saves a backup first, so an accidental wipe can be recovered.',
+        'Added a Restore button to the Admin tab to bring that backup back. It merges rather than overwrites, so anything you did after clearing is kept too.',
+        'Added a 10 minute cooldown between clears to prevent accidental repeat clicks.'
+      ]
+    },
+    {
       version: '1.1.13',
       notes: [
         'Fixed entries going missing when two players did something at the same moment — a death, level, or notable kill could be silently dropped from the Adventure Log and Leaderboard. Writes are now handled one at a time per group.',

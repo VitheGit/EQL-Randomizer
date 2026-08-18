@@ -30,6 +30,7 @@
     log: [], leaderboard: [], leaderboardResetAt: null,
     lbTab: 'randomized', // 'randomized' | 'manual'
     lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false, lbFilterD4: false,
+    backupInfo: null, confirmingRestore: false, restoreInput: '', restoreBusy: false, restoreError: '', restoreDone: '',
     chatMessages: [], chatInput: '', chatCollapsed: false, chatOnlineUsers: [], chatOfflineUsers: [], chatColor: '#2A2016', chatOverlayOpen: false, chatOverlayOpacity: 0.9, emojiPickerOpen: false, updatesTab: 'updates',
     logTab: 'randomized', // 'randomized' | 'manual'
 
@@ -1171,6 +1172,47 @@
     );
   }
 
+  function renderRestoreCard() {
+    var b = state.backupInfo;
+    if (!b) {
+      return '<div class="card"><h3>Restore</h3><p class="hint">Checking for a backup…</p></div>';
+    }
+    if (!b.exists) {
+      return '<div class="card"><h3>Restore</h3>' +
+        '<p class="hint">No backup available. One is saved automatically whenever the Adventure Log is cleared.</p>' +
+      '</div>';
+    }
+
+    var when = b.backedUpAt ? new Date(b.backedUpAt).toLocaleString() : 'an earlier clear';
+    var summary = b.entryCount + ' ' + (b.entryCount === 1 ? 'entry' : 'entries') +
+      ', saved ' + when + (b.clearedBy ? ' when ' + b.clearedBy + ' cleared the log' : '');
+
+    if (state.confirmingRestore) {
+      var expected = state.groupName || '(local only)';
+      return '<div class="card"><h3>Restore</h3>' +
+        '<p class="hint">' + escapeHtml(summary) + '</p>' +
+        '<div class="field">' +
+          '<label class="field-label">Type "' + escapeHtml(expected) + '" to Confirm Restoring</label>' +
+          '<input type="text" id="in-restore-confirm" value="' + escapeHtml(state.restoreInput) + '" autocomplete="off" placeholder="' + escapeHtml(expected) + '"' + (state.restoreBusy ? ' disabled' : '') + ' />' +
+          (state.restoreError ? '<p class="error-text">' + escapeHtml(state.restoreError) + '</p>' : '') +
+          '<div class="actions">' +
+            '<button class="btn btn-primary" id="btn-confirm-restore"' + (state.restoreBusy ? ' disabled' : '') + '>' + (state.restoreBusy ? 'Restoring…' : 'Confirm Restore') + '</button>' +
+            '<button class="btn btn-ghost" id="btn-cancel-restore"' + (state.restoreBusy ? ' disabled' : '') + '>Cancel</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    return '<div class="card"><h3>Restore</h3>' +
+      '<p class="hint">' + escapeHtml(summary) + '</p>' +
+      '<p class="hint">Restoring merges the backup back in. Anything that happened since the clear is kept, so nothing is lost either way.</p>' +
+      (state.restoreDone ? '<p class="note">' + escapeHtml(state.restoreDone) + '</p>' : '') +
+      '<div class="actions">' +
+        '<button class="btn btn-ghost" id="btn-restore-log" type="button">Restore Adventure Log</button>' +
+      '</div>' +
+    '</div>';
+  }
+
   function renderAdminView() {
     return (
       '<div class="card">' +
@@ -1194,6 +1236,7 @@
               '</div>';
             })()) +
       '</div>' +
+      renderRestoreCard() +
       '<div class="card">' +
         '<h3>Server</h3>' +
         '<p class="hint">Connected to: ' + escapeHtml(state.apiBaseUrl) + '</p>' +
@@ -1219,6 +1262,13 @@
       if (btn) btn.addEventListener('click', function () {
         state.view = view;
         if (view === 'settings') state.settingsSaved = false;
+        if (view === 'admin') {
+          // Fetched on demand rather than at startup, so the extra read
+          // only happens for someone who actually opens Admin.
+          state.backupInfo = null;
+          state.restoreDone = '';
+          loadBackupInfo();
+        }
         render();
       });
     });
@@ -1448,6 +1498,31 @@
       state.notificationPosition = e.target.value;
       await window.eqlApp.saveSettings({ notificationPosition: state.notificationPosition });
     });
+
+    var restoreBtn = document.getElementById('btn-restore-log');
+    if (restoreBtn) restoreBtn.addEventListener('click', function () {
+      state.confirmingRestore = true;
+      state.restoreInput = '';
+      state.restoreError = '';
+      state.restoreDone = '';
+      render();
+    });
+    var confirmRestoreBtn = document.getElementById('btn-confirm-restore');
+    if (confirmRestoreBtn) confirmRestoreBtn.addEventListener('click', handleRestore);
+    var cancelRestoreBtn = document.getElementById('btn-cancel-restore');
+    if (cancelRestoreBtn) cancelRestoreBtn.addEventListener('click', function () {
+      state.confirmingRestore = false;
+      state.restoreInput = '';
+      state.restoreError = '';
+      render();
+    });
+    var restoreInputEl = document.getElementById('in-restore-confirm');
+    if (restoreInputEl) {
+      restoreInputEl.addEventListener('input', function (e) { state.restoreInput = e.target.value; });
+      restoreInputEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); handleRestore(); }
+      });
+    }
 
     var tabUpdatesCheck = document.getElementById('tab-updates-check');
     if (tabUpdatesCheck) tabUpdatesCheck.addEventListener('click', function () { state.updatesTab = 'updates'; render(); });
@@ -1797,6 +1872,47 @@
     render();
     var el = document.getElementById('in-chat');
     if (el) el.focus();
+  }
+
+  async function loadBackupInfo() {
+    // Only fetched when the Admin tab is opened, so browsing the rest of
+    // the app costs nothing extra.
+    var res = await apiRequest('/api/admin/restore');
+    state.backupInfo = res.ok ? res.data : { exists: false };
+    render();
+  }
+
+  async function handleRestore() {
+    var expected = state.groupName || '(local only)';
+    if ((state.restoreInput || '').trim().toLowerCase() !== expected.toLowerCase()) {
+      state.restoreError = 'That doesn\'t match — type it exactly to confirm.';
+      render();
+      return;
+    }
+    state.restoreBusy = true;
+    state.restoreError = '';
+    render();
+
+    var res = await apiRequest('/api/admin/restore', {
+      method: 'POST',
+      body: { confirmText: state.restoreInput.trim() }
+    });
+    state.restoreBusy = false;
+
+    if (!res.ok) {
+      state.restoreError = (res.data && res.data.error) || 'Could not restore the backup.';
+      render();
+      return;
+    }
+
+    var n = (res.data && res.data.restored) || 0;
+    state.restoreDone = n > 0
+      ? 'Restored ' + n + ' ' + (n === 1 ? 'entry' : 'entries') + '.'
+      : 'Nothing to restore — those entries are already in the log.';
+    state.confirmingRestore = false;
+    state.restoreInput = '';
+    render();
+    await refreshSharedData();
   }
 
   // ---- Admin actions ----
