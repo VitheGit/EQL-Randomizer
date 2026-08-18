@@ -17,6 +17,7 @@
     update: '&#128260;',
     aa: '&#128142;',
     d4: '&#9888;',
+    d2plus: '&#9888;',
     notable: '&#128481;'
   };
 
@@ -29,6 +30,7 @@
     levelup: { audio: new Audio('sounds/level_up.mp3'), volume: 0.65 },
     ding: { audio: new Audio('sounds/ding_level50.mp3'), volume: 0.8 },
     d4: { audio: new Audio('sounds/d4_reminder.wav'), volume: 0.6 },
+    d2plus: { audio: new Audio('sounds/d4_reminder.wav'), volume: 0.6 },
     notable: { audio: new Audio('sounds/notable_kill.wav'), volume: 0.75 }
   };
   Object.keys(SOUNDS).forEach(function (key) {
@@ -52,7 +54,16 @@
     } catch (e) { /* ignore playback errors */ }
   }
 
+  function applyTheme(theme) {
+    if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+  }
+
   function addToast(payload) {
+    // Carried on each toast rather than stored, so a theme change takes
+    // effect on the very next notification without needing this window
+    // to be recreated.
+    applyTheme(payload.theme);
     var id = 'toast-' + (counter++);
     var icon = ICONS[payload.kind] || ICONS.info;
 

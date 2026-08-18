@@ -4,6 +4,34 @@
 <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'none'">
 <style>
+  /* Toast palette. Mirrors the main window's themes so notifications
+     don't stay bright when the app is in dark mode. */
+  :root {
+    --t-card-1: #F6ECD3;
+    --t-card-2: #ECDCB4;
+    --t-border: #A8823D;
+    --t-ink: #2A2016;
+    --t-ember: #8C3B2A;
+    --t-npc: #C0281E;
+    --t-d0: #1F8F3D;
+    --t-d1: #B8901A;
+    --t-d2: #C2621A;
+    --t-d3: #7A3FA8;
+    --t-d4: #E8301F;
+  }
+  [data-theme="dark"] {
+    --t-card-1: #2E2A24;
+    --t-card-2: #26221D;
+    --t-border: #7A6136;
+    --t-ink: #E8DFCC;
+    --t-ember: #86B0DC;
+    --t-npc: #FF7A68;
+    --t-d0: #6FE88A;
+    --t-d1: #F2D661;
+    --t-d2: #FFA55C;
+    --t-d3: #C08CF0;
+    --t-d4: #FF9385;
+  }
   html, body {
     margin: 0; padding: 0; background: transparent; overflow: hidden;
     font-family: 'Segoe UI', sans-serif;
@@ -33,12 +61,12 @@
   }
   .toast {
     width: 360px;
-    background: linear-gradient(180deg, #F6ECD3 0%, #ECDCB4 100%);
-    border: 1px solid #A8823D;
+    background: linear-gradient(180deg, var(--t-card-1) 0%, var(--t-card-2) 100%);
+    border: 1px solid var(--t-border);
     border-radius: 8px;
     box-shadow: 0 10px 28px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.5) inset;
     padding: 14px 18px;
-    color: #2A2016;
+    color: var(--t-ink);
     opacity: 0;
     transform: translateY(-16px);
     transition: opacity 0.25s ease, transform 0.25s ease;
@@ -50,20 +78,20 @@
     font-size: 13px;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: #8C3B2A;
+    color: var(--t-ember);
     margin: 0 0 4px;
     display: flex;
     align-items: center;
     gap: 6px;
   }
-  .toast .body .npc { color: #C0281E; font-weight: 800; }
+  .toast .body .npc { color: var(--t-npc); font-weight: 800; }
   .toast .body .player { font-weight: 800; }
   .toast .body .diff { font-weight: 800; }
-  .toast .body .diff-0 { color: #1F8F3D; }
-  .toast .body .diff-1 { color: #B8901A; }
-  .toast .body .diff-2 { color: #C2621A; }
-  .toast .body .diff-3 { color: #7A3FA8; }
-  .toast .body .diff-4 { color: #E8301F; }
+  .toast .body .diff-0 { color: var(--t-d0); }
+  .toast .body .diff-1 { color: var(--t-d1); }
+  .toast .body .diff-2 { color: var(--t-d2); }
+  .toast .body .diff-3 { color: var(--t-d3); }
+  .toast .body .diff-4 { color: var(--t-d4); }
   .toast .body {
     font-size: 14px;
     margin: 0;

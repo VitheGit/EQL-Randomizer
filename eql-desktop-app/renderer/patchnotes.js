@@ -3,10 +3,82 @@
 (function () {
   window.EQL_PATCH_NOTES = [
     {
+      version: '1.1.25',
+      notes: [
+        'Added a "D2+" character option — play only on Difficulty 2 or higher. It has its own triangle icon and reminds you when you zone somewhere easier.',
+        'Difficulty is now a dropdown (Any / D2+ / D4 Only) instead of a checkbox, since a character can only be one of them.',
+        'Added a D2+ filter to the Leaderboard.'
+      ]
+    },
+    {
+      version: '1.1.24',
+      notes: [
+        'Tightened the spacing above and below the buttons in the Your Character box.'
+      ]
+    },
+    {
+      version: '1.1.23',
+      notes: [
+        'Moved the group and "Watching log file" pills to the bottom corners of the Your Character box, either side of the buttons.'
+      ]
+    },
+    {
+      version: '1.1.22',
+      notes: [
+        'Tightened the space under the "I Died" and "Ding!" buttons further, so the box ends just below them.'
+      ]
+    },
+    {
+      version: '1.1.21',
+      notes: [
+        'The "Ding!" button is now a brighter yellow with dark text — it was hard to read in Dark Mode.',
+        'Tightened the gap under the "I Died" and "Ding!" buttons.'
+      ]
+    },
+    {
+      version: '1.1.20',
+      notes: [
+        'The "I Died" and "Ding!" buttons now sit inside the Your Character box, under the status text, instead of floating below it.'
+      ]
+    },
+    {
+      version: '1.1.19',
+      notes: [
+        'Notification titles now use the blue accent in Dark Mode, matching the rest of the app.',
+        'In the Adventure Log, the leveling path icon now sits next to the name alongside the SSF and D4 icons, instead of trailing after the race and classes.',
+        'The "Watching log file" and group badges moved from the bottom of the page to the top-left of the Your Character box.'
+      ]
+    },
+    {
+      version: '1.1.18',
+      notes: [
+        'In the Adventure Log, "killed by …" now sits on its own line under the death text instead of running long.'
+      ]
+    },
+    {
+      version: '1.1.17',
+      notes: [
+        'The theme is now a switch in the top-right corner of the app, instead of a setting buried in Settings.'
+      ]
+    },
+    {
+      version: '1.1.16',
+      notes: [
+        'Dark Mode now uses a soft blue accent instead of red. Colours that carry meaning — death, offline, NPC names, Difficulty 4 — stay warm.',
+        'Fixed the "I Died" button being nearly unreadable in Dark Mode.'
+      ]
+    },
+    {
+      version: '1.1.15',
+      notes: [
+        'Added a Theme setting with a Dark Mode option, under Settings → App Behavior. Notification popups follow your choice too.',
+        'Added a Restore button to the Admin tab, to bring back the backup taken when the Adventure Log was cleared. It merges rather than overwrites, so anything you did after clearing is kept too.'
+      ]
+    },
+    {
       version: '1.1.14',
       notes: [
         'Clearing the Adventure Log now saves a backup first, so an accidental wipe can be recovered.',
-        'Added a Restore button to the Admin tab to bring that backup back. It merges rather than overwrites, so anything you did after clearing is kept too.',
         'Added a 10 minute cooldown between clears to prevent accidental repeat clicks.'
       ]
     },

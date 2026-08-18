@@ -9,14 +9,47 @@
   html, body { margin: 0; padding: 0; height: 100%; }
   body {
     font-family: 'Segoe UI', 'Crimson Pro', serif;
-    background: radial-gradient(1200px 600px at 50% -10%, #F3E7C9 0%, #ECDFC0 55%, #DCC99C 100%);
-    color: #2A2016;
+    background: radial-gradient(1200px 600px at 50% -10%, var(--bg-1) 0%, var(--bg-2) 55%, var(--bg-3) 100%);
+    color: var(--ink);
     overflow-y: auto;
   }
 
-  #app { max-width: 1150px; margin: 0 auto; padding: 28px 24px 60px; }
+  #app { max-width: 1150px; margin: 0 auto; padding: 28px 24px 60px; position: relative; }
+
+  /* Theme switch, pinned to the top-right of the app shell. */
+  .theme-switch-wrap {
+    position: absolute; top: 16px; right: 24px; z-index: 20;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+  }
+  .theme-switch-label {
+    font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-soft); font-weight: 700;
+  }
+  .theme-switch {
+    background: none; border: none; padding: 0; cursor: pointer; line-height: 0;
+  }
+  .theme-switch-track {
+    display: block; width: 40px; height: 20px; border-radius: 10px;
+    background: var(--tint); border: 1px solid var(--bronze);
+    position: relative; transition: background 0.15s ease;
+  }
+  .theme-switch.is-dark .theme-switch-track { background: var(--ember); }
+  .theme-switch-knob {
+    position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--bronze-bright);
+    transition: transform 0.15s ease;
+  }
+  .theme-switch.is-dark .theme-switch-knob { transform: translateX(20px); }
+  .theme-switch:hover .theme-switch-track { border-color: var(--bronze-bright); }
+  .theme-switch-name {
+    font-size: 9px; color: var(--ink-soft); letter-spacing: 0.06em;
+  }
   .header, .user-bar, .links-bar, .legal-footer { max-width: 760px; margin-left: auto; margin-right: auto; }
 
+  /* Default (parchment) theme. Every colour the UI paints with lives
+     here so a theme swap is a matter of overriding this block — see
+     [data-theme="dark"] below. */
   :root {
     --parchment: #ECDFC0;
     --parchment-dark: #DCC99C;
@@ -26,6 +59,91 @@
     --bronze-bright: #D4A94E;
     --ember: #8C3B2A;
     --moss: #4B5A3A;
+
+    /* Surfaces */
+    --bg-1: #F3E7C9;
+    --bg-2: #ECDFC0;
+    --bg-3: #DCC99C;
+    --card-1: #F6ECD3;
+    --card-2: #ECDCB4;
+    --panel: #F6ECD3;
+
+    /* Translucent overlays. These flip from white-on-light to
+       white-on-dark, so they're variables rather than literals. */
+    --field-bg: var(--field-bg);
+    --field-bg-strong: var(--field-bg-strong);
+    --inset-bg: var(--inset-bg);
+    --tint-weak: var(--tint-weak);
+    --tint: var(--tint);
+    --tint-strong: var(--tint-strong);
+    --card-inset-highlight: rgba(255,255,255,0.5);
+    --shadow: rgba(42,32,22,0.4);
+
+    /* Semantic accents */
+    --danger: #D32F2F;
+    --success: #1B8A3D;
+    --update-banner: #E63946;
+    --primary-slot-text: #F3D9A8;
+    --died-btn-text: #E8B4A8;
+    --ding-bg: #D4A94E;
+    --ding-text: #2A2016;
+    --online-dot: #4C8A4C;
+    --offline-dot: #A83232;
+    --achievement: #9A7B12;
+    --notable: #1F8F3D;
+    --notable-npc: #C0281E;
+    --diff-0: #1F8F3D;
+    --diff-1: #B8901A;
+    --diff-2: #C2621A;
+    --diff-3: #7A3FA8;
+    --diff-4: #E8301F;
+  }
+
+  /* Dark theme. Same structure, darker surfaces and lifted accents so
+     text and the colour-coded notifications stay readable. */
+  [data-theme="dark"] {
+    --parchment: #2A2621;
+    --parchment-dark: #1E1B17;
+    --ink: #E8DFCC;
+    --ink-soft: #A99C86;
+    --bronze: #7A6136;
+    --bronze-bright: #C9A455;
+    --ember: #86B0DC;
+    --moss: #8FA872;
+
+    --bg-1: #23201B;
+    --bg-2: #1B1915;
+    --bg-3: #141210;
+    --card-1: #2E2A24;
+    --card-2: #26221D;
+    --panel: #2E2A24;
+
+    --field-bg: rgba(255,255,255,0.07);
+    --field-bg-strong: rgba(255,255,255,0.13);
+    --inset-bg: rgba(0,0,0,0.22);
+    --tint-weak: rgba(255,255,255,0.05);
+    --tint: rgba(255,255,255,0.10);
+    --tint-strong: rgba(255,255,255,0.22);
+    --card-inset-highlight: rgba(255,255,255,0.04);
+    --shadow: rgba(0,0,0,0.6);
+
+    --danger: #F0685F;
+    --success: #5FD186;
+    --update-banner: #6FC5E8;
+    --primary-slot-text: #1B1915;
+    --died-btn-text: #7A1F14;
+    --ding-bg: #EFCB5A;
+    --ding-text: #1B1915;
+    --online-dot: #6FD07A;
+    --offline-dot: #D46A6A;
+    --achievement: #E8C468;
+    --notable: #6FE88A;
+    --notable-npc: #FF7A68;
+    --diff-0: #6FE88A;
+    --diff-1: #F2D661;
+    --diff-2: #FFA55C;
+    --diff-3: #C08CF0;
+    --diff-4: #FF9385;
   }
 
   .header { text-align: center; margin-bottom: 6px; }
@@ -35,7 +153,7 @@
     color: var(--ember); margin: -10px 0 0;
   }
   .update-banner {
-    color: #E63946;
+    color: var(--update-banner);
     font-weight: 700;
     font-size: 13px;
     text-align: center;
@@ -54,15 +172,42 @@
   }
 
   .card {
-    background: linear-gradient(180deg, #F6ECD3 0%, #ECDCB4 100%);
+    background: linear-gradient(180deg, var(--card-1) 0%, var(--card-2) 100%);
     border: 1px solid var(--bronze); border-radius: 6px;
-    box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 12px 26px -16px rgba(42,32,22,0.4);
+    box-shadow: 0 1px 0 var(--card-inset-highlight) inset, 0 12px 26px -16px var(--shadow);
     padding: 22px 24px; margin-bottom: 16px;
   }
   #character-card { position: relative; }
   .character-card-badges {
     position: absolute; top: 12px; right: 14px;
     display: flex; align-items: center; gap: 6px;
+  }
+  /* Card foot: group pill left, action buttons centred, watch status
+     right. The side columns share a width so the middle stays optically
+     centred even though the two pills differ in length. */
+  .card-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-top: 6px;
+  }
+  .card-footer-side { flex: 1 1 0; min-width: 0; }
+  .card-footer-right { text-align: right; }
+  .card-footer-mid { flex: 0 0 auto; }
+  .card-footer .status-pill { margin: 0; }
+  /* Action buttons sitting inside the character card, under the status
+     note — slightly tighter than the standalone row they replaced. */
+  /* Buttons inside the character card sit close to its bottom edge.
+     The card's usual 22px padding is trimmed rather than offset with a
+     negative margin, so the spacing is explicit and doesn't depend on
+     margins cancelling out. A little breathing room is kept — flush to
+     the border reads as clipped rather than deliberate. */
+  .card-actions { margin: 0; }
+  #character-card.has-actions { padding-bottom: 10px; }
+  /* Narrow windows: the corner pills would collide with the buttons, so
+     they fall back to a normal row underneath. */
+  @media (max-width: 900px) {
+    /* Not enough width for three columns — stack them instead. */
+    .card-footer { flex-direction: column; gap: 8px; }
+    .card-footer-side, .card-footer-right { flex: none; text-align: center; }
   }
 
   .card h3 {
@@ -91,10 +236,18 @@
   }
   .class-slot.is-primary { background: var(--ember); box-shadow: 0 0 0 2px var(--bronze-bright); }
   .class-slot .n { display: block; font-size: 8px; letter-spacing: 0.2em; color: var(--bronze-bright); margin-bottom: 3px; }
-  .class-slot.is-primary .n { color: #F3D9A8; }
+  .class-slot.is-primary .n { color: var(--primary-slot-text); }
 
-  .note { text-align: center; font-size: 12px; color: var(--ink-soft); font-style: italic; margin: 16px 0 0; }
+  .note { text-align: center; font-size: 12px; color: var(--ink-soft); font-style: italic; margin: 12px 0 0; }
   .note.warn { color: var(--ember); font-style: normal; }
+
+  /* The difficulty picker sits in the toggles row alongside the
+     checkboxes, so it needs to read as one of them rather than a
+     full-width form field. */
+  .difficulty-select { gap: 6px; }
+  .difficulty-select select {
+    width: auto; font-size: 12px; padding: 3px 6px;
+  }
 
   .toggles-row { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 0 0 6px; }
   .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-soft); cursor: pointer; }
@@ -116,16 +269,16 @@
   .btn-primary { background: var(--ember); color: var(--parchment); border-color: var(--ember); }
   .btn-ghost { background: transparent; color: var(--ink-soft); border-color: var(--ink-soft); }
   .btn-blue { background: #2563EB; color: #fff; border-color: #1D4ED8; }
-  .btn-died { background: var(--ink); color: #E8B4A8; border-color: var(--ink); }
-  .btn-ding { background: var(--bronze-bright); color: var(--ink); border-color: var(--bronze); }
+  .btn-died { background: var(--ink); color: var(--died-btn-text); border-color: var(--ink); }
+  .btn-ding { background: var(--ding-bg); color: var(--ding-text); border-color: var(--bronze); }
   .btn-full { width: 100%; }
 
   input[type="text"], input[type="password"], select {
     width: 100%; font-size: 14px; padding: 9px 12px; border-radius: 4px;
-    border: 1px solid var(--bronze); background: rgba(255,255,255,0.6); color: var(--ink);
+    border: 1px solid var(--bronze); background: var(--field-bg); color: var(--ink);
   }
   input[type="text"]:disabled, input[type="password"]:disabled, select:disabled {
-    background: rgba(42,32,22,0.08); color: var(--ink-soft); border-color: rgba(122,90,52,0.4);
+    background: var(--tint-weak); color: var(--ink-soft); border-color: rgba(122,90,52,0.4);
     cursor: not-allowed;
   }
   label.field-label { display: block; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--moss); margin-bottom: 5px; }
@@ -169,6 +322,11 @@
   .lb-build { font-size: 11px; color: var(--ink-soft); }
   .log-stamp { font-size: 10px; color: var(--bronze); white-space: nowrap; }
   .log-text strong { font-size: 12px; }
+  /* Puts "killed by …" on its own line, starting flush with the "d" of
+     "died" above it. An inline-flex column handles the alignment
+     regardless of how long the player's name and tags are. */
+  .died-block { display: inline-flex; flex-direction: column; vertical-align: top; }
+  .died-block .killed-by { display: block; }
   .empty-text { font-size: 12px; color: var(--ink-soft); font-style: italic; }
 
   .lb-filters {
@@ -184,7 +342,7 @@
   .chat-body .chat-scroll { flex: 1; min-width: 0; margin-bottom: 0; }
   .chat-online {
     width: 150px; flex-shrink: 0; overflow-y: auto; max-height: 220px;
-    background: rgba(255,255,255,0.35); border: 1px solid var(--bronze);
+    background: var(--inset-bg); border: 1px solid var(--bronze);
     border-radius: 4px; padding: 8px 10px;
   }
   .chat-online-title {
@@ -194,10 +352,10 @@
   .chat-online-user { font-size: 12px; line-height: 1.6; color: var(--ink); display: flex; align-items: center; }
   .chat-online-user.chat-mine { color: var(--ember); font-weight: 700; }
   .chat-online-dot {
-    width: 7px; height: 7px; border-radius: 50%; background: #4C8A4C;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--online-dot);
     display: inline-block; margin-right: 6px; flex-shrink: 0;
   }
-  .chat-online-dot.offline { background: #A83232; }
+  .chat-online-dot.offline { background: var(--offline-dot); }
   .chat-online-user.is-offline { color: var(--ink-soft); opacity: 0.75; }
   .chat-offline-title { margin-top: 8px; }
   .chat-online-empty { font-size: 11px; color: var(--ink-soft); font-style: italic; margin: 0; }
@@ -208,7 +366,7 @@
 
   .chat-scroll {
     max-height: 220px; overflow-y: auto; margin-bottom: 10px;
-    background: rgba(255,255,255,0.35); border: 1px solid var(--bronze);
+    background: var(--inset-bg); border: 1px solid var(--bronze);
     border-radius: 4px; padding: 8px 10px;
   }
   .chat-line { font-size: 13px; line-height: 1.5; margin-bottom: 2px; word-wrap: break-word; }
@@ -219,40 +377,40 @@
   .chat-system .chat-text { color: var(--moss); font-style: italic; }
   /* Achievements get their own tone so they stand out from the
      death/ding/level-up system lines. */
-  .chat-achievement .chat-text { color: #9A7B12; font-weight: 600; }
+  .chat-achievement .chat-text { color: var(--achievement); font-weight: 600; }
   /* Notable kills — bright green, darkened just enough to stay legible
      against the light parchment background. */
-  .chat-notable .chat-text { color: #1F8F3D; font-weight: 700; font-style: normal; }
-  .chat-notable .chat-npc { color: #C0281E; font-weight: 800; }
+  .chat-notable .chat-text { color: var(--notable); font-weight: 700; font-style: normal; }
+  .chat-notable .chat-npc { color: var(--notable-npc); font-weight: 800; }
   .chat-notable .chat-player { font-weight: 800; }
   /* Difficulty tag, colored by tier. D0 matches the surrounding green;
      D4 is a brighter red than the NPC name so it reads as the top tier. */
   .chat-notable .chat-diff { font-weight: 800; }
-  .chat-notable .chat-diff-0 { color: #1F8F3D; }
-  .chat-notable .chat-diff-1 { color: #B8901A; }
-  .chat-notable .chat-diff-2 { color: #C2621A; }
-  .chat-notable .chat-diff-3 { color: #7A3FA8; }
-  .chat-notable .chat-diff-4 { color: #E8301F; }
+  .chat-notable .chat-diff-0 { color: var(--diff-0); }
+  .chat-notable .chat-diff-1 { color: var(--diff-1); }
+  .chat-notable .chat-diff-2 { color: var(--diff-2); }
+  .chat-notable .chat-diff-3 { color: var(--diff-3); }
+  .chat-notable .chat-diff-4 { color: var(--diff-4); }
   .chat-input-row { display: flex; gap: 8px; position: relative; }
   .chat-emoji-btn {
     flex-shrink: 0; width: 34px; padding: 0; font-size: 16px; line-height: 1;
-    cursor: pointer; background: rgba(255,255,255,0.6);
+    cursor: pointer; background: var(--field-bg);
     border: 1px solid var(--bronze); border-radius: 4px;
   }
-  .chat-emoji-btn:hover { background: rgba(255,255,255,0.9); }
+  .chat-emoji-btn:hover { background: var(--field-bg-strong); }
   .chat-emoji-panel {
     position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 40;
     width: 300px; max-height: 210px; overflow-y: auto;
     display: flex; flex-wrap: wrap; gap: 2px;
     padding: 8px; border-radius: 6px;
-    background: #F6ECD3; border: 1px solid var(--bronze);
+    background: var(--panel); border: 1px solid var(--bronze);
     box-shadow: 0 8px 20px -6px rgba(42,32,22,0.45);
   }
   .chat-emoji-panel button {
     width: 30px; height: 30px; font-size: 17px; line-height: 1;
     background: transparent; border: none; border-radius: 4px; cursor: pointer;
   }
-  .chat-emoji-panel button:hover { background: rgba(42,32,22,0.12); }
+  .chat-emoji-panel button:hover { background: var(--tint); }
   /* Opacity, name-color swatches and the overlay toggle share one row. */
   .patch-scroll { max-height: 320px; overflow-y: auto; padding-right: 6px; }
   .patch-release { margin-bottom: 14px; }
@@ -293,9 +451,9 @@
   .chat-input-row .btn, .chat-action-btn { min-width: 88px; flex-shrink: 0; }
   .chat-swatch {
     width: 18px; height: 18px; border-radius: 50%; padding: 0;
-    border: 2px solid rgba(42,32,22,0.25); cursor: pointer; flex-shrink: 0;
+    border: 2px solid var(--tint-strong); cursor: pointer; flex-shrink: 0;
   }
-  .chat-swatch:hover { border-color: rgba(42,32,22,0.55); }
+  .chat-swatch:hover { border-color: var(--tint-strong); }
   .chat-swatch.selected {
     border-color: var(--ink);
     box-shadow: 0 0 0 2px var(--parchment), 0 0 0 3px var(--ink);
@@ -339,7 +497,7 @@
     cursor: pointer;
   }
   .sidebar-nav-item:last-child { border-bottom: none; }
-  .sidebar-nav-item:hover { background: rgba(42,32,22,0.06); }
+  .sidebar-nav-item:hover { background: var(--tint-weak); }
   .sidebar-nav-item.active { background: var(--ember); color: var(--parchment); }
   .main-content { max-width: 760px; margin: 0 auto; width: 100%; }
   @media (max-width: 1000px) {
@@ -386,10 +544,10 @@
     line-height: 1.5;
   }
 
-  .killed-by { color: #D32F2F; font-weight: 700; }
+  .killed-by { color: var(--danger); font-weight: 700; }
 
   .ding-glow {
-    color: #1B8A3D;
+    color: var(--success);
     font-weight: 800;
     text-shadow: 0 0 6px rgba(46,204,113,0.85), 0 0 14px rgba(46,204,113,0.55), 0 0 24px rgba(120,255,150,0.4);
   }
@@ -399,7 +557,7 @@
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 0.06em;
-    color: #5A4B38;
+    color: var(--ink-soft);
     background: rgba(90,75,56,0.12);
     border: 1px solid rgba(90,75,56,0.35);
     border-radius: 3px;
@@ -419,7 +577,7 @@
     vertical-align: middle;
   }
   .status-alive {
-    color: #1B8A3D;
+    color: var(--success);
     background: rgba(27,138,61,0.12);
     border: 1px solid rgba(27,138,61,0.4);
   }

@@ -103,6 +103,9 @@ function loadSettings() {
   if (typeof settings.notificationVolume !== 'number') {
     settings.notificationVolume = 1.0; // 100% — a multiplier on top of each sound's own tuned base volume
   }
+  if (!settings.theme) {
+    settings.theme = 'default';
+  }
   if (!settings.notificationPosition) {
     settings.notificationPosition = 'top-middle'; // matches the previous hardcoded behavior
   }
@@ -237,7 +240,7 @@ function notify(title, body, kind, meta) {
     const notificationVolume = settings.notificationVolume;
     const send = function () {
       try {
-        win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle', meta: meta || null });
+        win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle', meta: meta || null, theme: settings.theme || 'default' });
         if (!win.isVisible()) win.showInactive();
       } catch (e2) {
         realtimeDebugLog('TOAST — send FAILED: ' + (e2 && e2.message));
@@ -508,6 +511,7 @@ var watchState = {
   // the zone-enter reminder below. Kept in sync by the renderer via the
   // character-rolled/character-locked-sync/character-unlocked IPC calls.
   characterD4: false,
+  characterD2Plus: false,
   // The rolled character's classes, for verifying /who output against
   // what they're actually logged into. Kept in sync by the renderer.
   characterClasses: null,
@@ -896,13 +900,18 @@ function processLogLine(line) {
     // Recorded for every zone change, not just D4 characters — notable
     // kills are tagged with whatever difficulty the zone was.
     watchState.currentDifficulty = difficultyFromZone(zoneName);
-    if (watchState.characterActive && watchState.characterD4) {
-      // "(Refined)" in the zone name means it's already a D4 zone — no
-      // need to remind someone to do something they've already done.
-      if (zoneName.indexOf('(Refined)') === -1) {
+    // Difficulty reminders. Compared numerically against the zone's own
+    // tier rather than matching suffix text, so D2+ (satisfied by
+    // Adaptive, Fused or Refined) works the same way D4 does. No reminder
+    // when the zone already meets the requirement.
+    if (watchState.characterActive) {
+      var zoneDifficulty = watchState.currentDifficulty;
+      if (watchState.characterD4 && zoneDifficulty !== 4) {
         // Purely local — a reminder for the person playing, not a group
         // event, so this never touches the backend or broadcasts to anyone.
         notify('D4 Reminder', "Don't forget to change to D4 difficulty!", 'd4');
+      } else if (watchState.characterD2Plus && (typeof zoneDifficulty !== 'number' || zoneDifficulty < 2)) {
+        notify('D2+ Reminder', "Don't forget to change to Difficulty 2 or higher!", 'd2plus');
       }
     }
     return;
@@ -1336,6 +1345,7 @@ ipcMain.handle('character-rolled', function (event, payload) {
   watchState.currentLevel = 1;
   watchState.characterActive = true;
   watchState.characterD4 = !!(payload && payload.d4);
+  watchState.characterD2Plus = !!(payload && payload.d2plus);
   watchState.characterClasses = (payload && payload.classes) || null;
   watchState.characterRolledAt = (payload && payload.rolledAt) || new Date().toISOString();
   watchState.lastMismatchNotifiedAt = 0;
@@ -1349,6 +1359,7 @@ ipcMain.handle('character-locked-sync', function (event, payload) {
   // from log history.
   watchState.characterActive = true;
   watchState.characterD4 = !!(payload && payload.d4);
+  watchState.characterD2Plus = !!(payload && payload.d2plus);
   watchState.characterClasses = (payload && payload.classes) || null;
   watchState.characterRolledAt = (payload && payload.rolledAt) || null;
   // Now that we know when this character was rolled, redo the level scan
@@ -1368,6 +1379,7 @@ ipcMain.handle('character-unlocked', function () {
   // line for the now-resolved character from firing another notification.
   watchState.characterActive = false;
   watchState.characterD4 = false;
+  watchState.characterD2Plus = false;
   watchState.characterClasses = null;
   watchState.characterRolledAt = null;
   // Clear the level too — a resolved character's level must not carry

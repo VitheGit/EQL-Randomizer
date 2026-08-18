@@ -37,7 +37,12 @@ export async function onRequestPost(context) {
   // the filename don't produce something invalid; unrecognized values are
   // just dropped rather than trusted as-is.
   const server = SERVERS.filter(function (s) { return body.server && s.toLowerCase() === String(body.server).toLowerCase(); })[0] || null;
+  // Difficulty mode. Kept as two booleans rather than one enum so log
+  // entries written before D2+ existed still read correctly — they
+  // simply have d4 set and d2plus absent. The client enforces that only
+  // one can be chosen; this guards it server-side too.
   const d4 = !!body.d4;
+  const d2plus = !d4 && !!body.d2plus;
   // ONE timestamp for both the character record and its log entry. These
   // were previously two separate new Date() calls that differed by a few
   // milliseconds, which broke the exact-match dedupe in ensureRollEntry
@@ -79,6 +84,7 @@ export async function onRequestPost(context) {
       ssf: ssf,
       server: server,
       d4: d4,
+      d2plus: d2plus,
       // Recorded on the character itself so a cleared log can be
       // reconstructed later without losing the run's start time.
       rolledAt: rolledAt,
@@ -100,6 +106,7 @@ export async function onRequestPost(context) {
       ssf: ssf,
       server: server,
       d4: d4,
+      d2plus: d2plus,
       // Recorded on the character itself so a cleared log can be
       // reconstructed later without losing the run's start time.
       rolledAt: rolledAt,
@@ -125,7 +132,8 @@ export async function onRequestPost(context) {
     manualBuild: character.manualBuild,
     ssf: character.ssf,
     server: character.server,
-    d4: character.d4
+    d4: character.d4,
+    d2plus: character.d2plus
   };
   // Appended through the realtime worker so simultaneous rolls from
   // different players can't clobber each other.
