@@ -30,7 +30,7 @@
     log: [], leaderboard: [], leaderboardResetAt: null,
     lbTab: 'randomized', // 'randomized' | 'manual'
     lbFilterClass: '', lbFilterStatus: '', lbFilterSSF: false, lbFilterPath: false, lbFilterD4: false,
-    chatMessages: [], chatInput: '', chatCollapsed: false, chatOnlineUsers: [], chatOfflineUsers: [], chatColor: '#2A2016', chatOverlayOpen: false, chatOverlayOpacity: 0.9, emojiPickerOpen: false,
+    chatMessages: [], chatInput: '', chatCollapsed: false, chatOnlineUsers: [], chatOfflineUsers: [], chatColor: '#2A2016', chatOverlayOpen: false, chatOverlayOpacity: 0.9, emojiPickerOpen: false, updatesTab: 'updates',
     logTab: 'randomized', // 'randomized' | 'manual'
 
     settingsLogFilePath: '', settingsCharacterName: '',
@@ -52,10 +52,12 @@
 
   // ---- Helpers ----
 
-  function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
+  // Shared with the overlay and toast windows — see render-utils.js.
+  var escapeHtml = window.EQL_RENDER.escapeHtml;
+  var formatChatTime = window.EQL_RENDER.formatClockTime;
+  function highlightMeta(text, meta) {
+    return window.EQL_RENDER.highlightMeta(text, meta,
+      { player: 'chat-player', npc: 'chat-npc', diff: 'chat-diff' });
   }
 
   var RACES = [
@@ -439,6 +441,11 @@
       return;
     }
 
+    if (state.screen === 'auth-instructions') {
+      renderAuthInstructionsScreen();
+      return;
+    }
+
     if (state.screen === 'auth') {
       renderAuthScreen();
       return;
@@ -475,15 +482,32 @@
         '<button class="btn btn-primary btn-full" id="btn-auth-submit"' + (state.authBusy ? ' disabled' : '') + '>' +
           (state.authBusy ? 'Please wait…' : (isRegister ? 'Create Account' : 'Log In')) +
         '</button>' +
+        '<button class="btn btn-ghost btn-full" id="btn-auth-instructions" style="margin-top:8px;">Instructions</button>' +
       '</div>';
 
+    document.getElementById('btn-auth-instructions').addEventListener('click', function () {
+      state.screen = 'auth-instructions';
+      render();
+    });
     document.getElementById('tab-login').addEventListener('click', function () { state.authMode = 'login'; state.authError = ''; render(); });
     document.getElementById('tab-register').addEventListener('click', function () { state.authMode = 'register'; state.authError = ''; render(); });
     document.getElementById('in-api-url').addEventListener('input', function (e) { state.authApiUrl = e.target.value; });
     document.getElementById('in-username').addEventListener('input', function (e) { state.authUsername = e.target.value; });
     document.getElementById('in-password').addEventListener('input', function (e) { state.authPassword = e.target.value; });
-    document.getElementById('btn-auth-submit').addEventListener('click', function () {
+    function submitAuth() {
+      if (state.authBusy) return;
       if (state.authMode === 'register') doRegister(); else doLogin();
+    }
+    document.getElementById('btn-auth-submit').addEventListener('click', submitAuth);
+
+    // Enter submits from any of the auth fields, so the form behaves the
+    // way a login form is expected to rather than requiring a click.
+    ['in-api-url', 'in-username', 'in-password'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submitAuth(); }
+      });
     });
   }
 
@@ -545,8 +569,39 @@
 
     html += '<p class="legal-footer">EverQuest Legends is a trademark of Darkpaw Games and Game Jawn. This is an unofficial, fan-made tool and is not affiliated with, endorsed by, or sponsored by Darkpaw Games, Game Jawn, or their affiliates.</p>';
 
+    // Rebuilding the page throws away focus and the caret, which is very
+    // noticeable while typing in chat — an incoming message would bounce
+    // the cursor to the end of whatever you were writing. Capture and
+    // restore it around the rebuild so a re-render is invisible to the
+    // person typing.
+    var focusState = captureFocus();
     root.innerHTML = html;
     bindAppEvents();
+    restoreFocus(focusState);
+  }
+
+  function captureFocus() {
+    var el = document.activeElement;
+    if (!el || !el.id) return null;
+    var isTextField = el.tagName === 'INPUT' &&
+      (el.type === 'text' || el.type === 'password' || el.type === 'range');
+    if (!isTextField) return null;
+    return { id: el.id, start: el.selectionStart, end: el.selectionEnd };
+  }
+
+  function restoreFocus(saved) {
+    if (!saved) return;
+    var el = document.getElementById(saved.id);
+    if (!el) return;
+    el.focus();
+    // Range inputs have no text selection, and setSelectionRange throws
+    // on them.
+    if (el.type === 'range') return;
+    try {
+      if (saved.start != null && saved.end != null) {
+        el.setSelectionRange(saved.start, saved.end);
+      }
+    } catch (e) { /* field type doesn't support selection — harmless */ }
   }
 
   function renderRandomizerView() {
@@ -826,65 +881,6 @@
     '</div>';
   }
 
-  // Escapes the message, then wraps a known substring (currently the NPC
-  // name on notable kills) so it can be styled. Both the haystack and the
-  // Wraps known substrings (the NPC name, and the "Difficulty N" tag) so
-  // each can be styled. Ranges are collected against the ESCAPED text and
-  // applied in order, so inserting markup for one can't shift the offsets
-  // of the other.
-  function highlightMeta(text, meta) {
-    var safe = escapeHtml(text);
-    if (!meta) return safe;
-
-    var ranges = [];
-    function addRange(needleRaw, cls, inlineColor) {
-      if (!needleRaw) return;
-      var needle = escapeHtml(needleRaw);
-      var idx = safe.indexOf(needle);
-      if (idx === -1) return;
-      ranges.push({ start: idx, end: idx + needle.length, cls: cls, color: inlineColor || null });
-    }
-
-    // The player's own chosen chat color is applied inline, since it's a
-    // per-person value rather than one of a fixed set of classes.
-    // A kill can credit several players, so colour each name with that
-    // person's own choice. Single-player kills still use meta.player.
-    if (meta.players && meta.players.length) {
-      meta.players.forEach(function (name) {
-        addRange(name, 'chat-player', (meta.playerColors || {})[name] || null);
-      });
-    } else {
-      addRange(meta.player, 'chat-player', meta.playerColor);
-    }
-    addRange(meta.npc, 'chat-npc');
-    if (typeof meta.difficulty === 'number') {
-      addRange('Difficulty ' + meta.difficulty, 'chat-diff chat-diff-' + meta.difficulty);
-    }
-    if (!ranges.length) return safe;
-
-    ranges.sort(function (a, b) { return a.start - b.start; });
-    var out = '';
-    var cursor = 0;
-    ranges.forEach(function (r) {
-      if (r.start < cursor) return; // overlapping — skip rather than corrupt
-      var style = r.color ? ' style="color:' + escapeHtml(r.color) + ';"' : '';
-      out += safe.slice(cursor, r.start) +
-        '<span class="' + r.cls + '"' + style + '>' + safe.slice(r.start, r.end) + '</span>';
-      cursor = r.end;
-    });
-    return out + safe.slice(cursor);
-  }
-
-  function formatChatTime(iso) {
-    try {
-      var d = new Date(iso);
-      var h = d.getHours(), m = d.getMinutes();
-      var ampm = h >= 12 ? 'PM' : 'AM';
-      h = h % 12; if (h === 0) h = 12;
-      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
-    } catch (e) { return ''; }
-  }
-
   function pushChatMessage(msg) {
     state.chatMessages.push(msg);
     if (state.chatMessages.length > CHAT_MAX_MESSAGES) {
@@ -970,10 +966,92 @@
     return html;
   }
 
+  // Shared by the Instructions tab and the pre-login instructions screen,
+  // so the two can never drift apart. Returns the inner content only —
+  // each caller wraps it with its own heading and buttons.
+  function renderPatchNotes() {
+    var N = window.EQL_PATCH_NOTES;
+    if (!N || !N.length) return '<p class="hint">No patch notes available.</p>';
+    return '<div class="patch-scroll">' +
+      N.map(function (rel) {
+        var isCurrent = rel.version === state.appVersion;
+        return '<div class="patch-release">' +
+          '<div class="patch-version">v' + escapeHtml(rel.version) +
+            (isCurrent ? ' <span class="patch-current">current</span>' : '') +
+          '</div>' +
+          '<ul class="patch-list">' +
+            rel.notes.map(function (n) { return '<li>' + escapeHtml(n) + '</li>'; }).join('') +
+          '</ul>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }
+
+  function renderInstructionsBody() {
+    var D = window.EQL_INSTRUCTIONS;
+    if (!D) return '<p class="hint">Instructions could not be loaded.</p>';
+
+    var html = '<p class="instr-intro">' + escapeHtml(D.intro) + '</p>';
+
+    D.sections.forEach(function (sec) {
+      html += '<div class="instr-section">' +
+        '<h4 class="instr-heading">' + escapeHtml(sec.title) + '</h4>' +
+        (sec.note ? '<p class="instr-note">' + escapeHtml(sec.note) + '</p>' : '') +
+        '<ul class="instr-list">' +
+          sec.steps.map(function (s) {
+            var body = s.label
+              ? '<strong class="instr-label">' + escapeHtml(s.label) + ':</strong> ' + escapeHtml(s.text)
+              : escapeHtml(s.text);
+            if (s.link) {
+              body += ' <a href="#" class="instr-link" data-instr-link="' + escapeHtml(s.link) + '">' + escapeHtml(s.link) + '</a>';
+            }
+            return '<li>' + body + '</li>';
+          }).join('') +
+        '</ul>' +
+        (sec.footer ? '<p class="instr-note">' + escapeHtml(sec.footer) + '</p>' : '') +
+      '</div>';
+    });
+
+    html += '<div class="instr-closing">' +
+      D.closing.map(function (p) { return '<p>' + escapeHtml(p) + '</p>'; }).join('') +
+      '<p class="instr-signoff">' + escapeHtml(D.signoff) + '</p>' +
+    '</div>';
+
+    return html;
+  }
+
   function renderInstructionsView() {
     return '<div class="card"><h3 class="page-title">Instructions</h3>' +
-      '<p class="hint">Coming soon.</p>' +
+      renderInstructionsBody() +
     '</div>';
+  }
+
+  // Standalone version shown before login, with a way back. Deliberately
+  // separate from the tab version, which has the sidebar to navigate with
+  // and shouldn't offer a "back to login" route.
+  function renderAuthInstructionsScreen() {
+    root.innerHTML =
+      '<div class="header">' +
+        '<img src="../build/icon.png" alt="EQ Legends Randomizer" />' +
+        '<p class="subtitle">Character Randomizer</p>' +
+      '</div>' +
+      '<div class="card" style="max-width:760px;margin:0 auto;">' +
+        '<h3 class="page-title">Instructions</h3>' +
+        '<button class="btn btn-ghost btn-full" id="btn-back-to-login" style="margin-bottom:14px;">&larr; Back to Login</button>' +
+        renderInstructionsBody() +
+        '<button class="btn btn-ghost btn-full" id="btn-back-to-login-bottom" style="margin-top:14px;">&larr; Back to Login</button>' +
+      '</div>';
+
+    function goBack() { state.screen = 'auth'; render(); }
+    document.getElementById('btn-back-to-login').addEventListener('click', goBack);
+    document.getElementById('btn-back-to-login-bottom').addEventListener('click', goBack);
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-instr-link]'), function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        window.eqlApp.openExternalLink(a.getAttribute('data-instr-link'));
+      });
+    });
   }
 
   var updateCooldownTimer = null;
@@ -1055,8 +1133,13 @@
       '</div>' +
       '<div class="card">' +
         '<h3>Updates</h3>' +
-        '<p class="hint">Current version: ' + escapeHtml(state.appVersion || '—') + '</p>' +
-        renderUpdateStatus() +
+        '<div class="auth-tabs" style="margin-bottom:10px;">' +
+          '<button class="auth-tab' + (state.updatesTab === 'patchnotes' ? '' : ' active') + '" id="tab-updates-check" type="button">Updates</button>' +
+          '<button class="auth-tab' + (state.updatesTab === 'patchnotes' ? ' active' : '') + '" id="tab-updates-notes" type="button">Patch Notes</button>' +
+        '</div>' +
+        (state.updatesTab === 'patchnotes'
+          ? renderPatchNotes()
+          : '<p class="hint">Current version: ' + escapeHtml(state.appVersion || '—') + '</p>' + renderUpdateStatus()) +
       '</div>' +
       '<div class="card">' +
         '<h3>App Behavior</h3>' +
@@ -1268,6 +1351,13 @@
       });
     }
 
+    Array.prototype.forEach.call(document.querySelectorAll('[data-instr-link]'), function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        window.eqlApp.openExternalLink(a.getAttribute('data-instr-link'));
+      });
+    });
+
     var overlayBtn = document.getElementById('btn-chat-overlay');
     if (overlayBtn) overlayBtn.addEventListener('click', async function () {
       var res = await window.eqlApp.toggleChatOverlay();
@@ -1358,6 +1448,11 @@
       state.notificationPosition = e.target.value;
       await window.eqlApp.saveSettings({ notificationPosition: state.notificationPosition });
     });
+
+    var tabUpdatesCheck = document.getElementById('tab-updates-check');
+    if (tabUpdatesCheck) tabUpdatesCheck.addEventListener('click', function () { state.updatesTab = 'updates'; render(); });
+    var tabUpdatesNotes = document.getElementById('tab-updates-notes');
+    if (tabUpdatesNotes) tabUpdatesNotes.addEventListener('click', function () { state.updatesTab = 'patchnotes'; render(); });
 
     var checkUpdateBtn = document.getElementById('btn-check-update');
     if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', function () {

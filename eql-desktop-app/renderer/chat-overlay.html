@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'none'">
 <style>
   html, body {
     margin: 0; padding: 0; height: 100%;
@@ -146,6 +147,7 @@
       <button id="send">Send</button>
     </div>
   </div>
+  <script src="render-utils.js"></script>
   <script src="emoji.js"></script>
   <script src="chat-overlay.js"></script>
 </body>

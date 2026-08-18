@@ -1,8 +1,7 @@
 import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser, saveUser } from '../_lib/auth-users.js';
 import { drawCharacter, generateLevelingPath, RACES, CLASSES, SERVERS, isEligible } from '../_lib/gamedata.js';
-import { logKeyFor } from '../_lib/groups.js';
-import { broadcastEntry } from '../_lib/broadcast.js';
+import { appendLogEntry } from '../_lib/append-log.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -111,8 +110,7 @@ export async function onRequestPost(context) {
   user.currentCharacter = character;
   await saveUser(env, user);
 
-  const logRaw = await env.EQL_KV.get(logKeyFor(user));
-  const log = logRaw ? JSON.parse(logRaw) : [];
+
   const entry = {
     type: 'roll',
     time: rolledAt,
@@ -129,9 +127,9 @@ export async function onRequestPost(context) {
     server: character.server,
     d4: character.d4
   };
-  log.push(entry);
-  await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
-  context.waitUntil(broadcastEntry(env, username, user.group, entry));
+  // Appended through the realtime worker so simultaneous rolls from
+  // different players can't clobber each other.
+  await appendLogEntry(context, user, entry);
 
   return json({ character: character });
 }

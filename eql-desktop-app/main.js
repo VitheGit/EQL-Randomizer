@@ -239,13 +239,11 @@ function notify(title, body, kind, meta) {
       try {
         win.webContents.send('show-toast', { title: title, body: body, kind: kind || 'info', soundsEnabled: soundsEnabled, notificationVolume: notificationVolume, position: settings.notificationPosition || 'top-middle', meta: meta || null });
         if (!win.isVisible()) win.showInactive();
-        realtimeDebugLog('TOAST — sent to notify window (title="' + title + '" pos=' + (settings.notificationPosition || 'top-middle') + ')');
       } catch (e2) {
         realtimeDebugLog('TOAST — send FAILED: ' + (e2 && e2.message));
       }
     };
     if (win.webContents.isLoading()) {
-      realtimeDebugLog('TOAST — notify window still loading, queued (title="' + title + '")');
       win.webContents.once('did-finish-load', send);
     } else {
       send();
@@ -401,8 +399,6 @@ async function submitMilestone(type, extra) {
       console.error('Milestone submit failed:', data);
       realtimeDebugLog('MILESTONE — submit FAILED type=' + type + ' status=' + res.status +
         ' body=' + JSON.stringify(body) + ' response=' + JSON.stringify(data));
-    } else {
-      realtimeDebugLog('MILESTONE — submitted ok type=' + type + ' ' + JSON.stringify(extra || {}));
     }
   } catch (e) {
     console.error('Milestone submit network error:', e);
@@ -433,7 +429,7 @@ const OTHER_SLAIN_RE = /\]\s*(.+?) has been slain by (.+?)!/;
 
 // Matched case-insensitively against the mob name.
 const NOTABLE_NPCS = [
-  'Lord Nagafen', 'Lady Vox', 'Master Yael', 'Phinigel Autropos', 'Cazic Thule',
+  'Lord Nagafen', 'Lady Vox', 'Master Yael', 'Phinigel Autropos', 'Cazic-Thule',
   'Dread', 'Terror', 'Fright', 'A dracoliche', 'Innoruuk, the Prince of Hate',
   'Maestro of Rancor', 'Lord of Loathing', 'Lord of Ire', 'Master of Spite',
   'Mistress of Scorn', 'High Priest M`kari', 'Magi P`tasa', 'Coercer T`vala',
@@ -444,6 +440,11 @@ const NOTABLE_NPCS = [
 ];
 const NOTABLE_LOOKUP = {};
 NOTABLE_NPCS.forEach(function (n) { NOTABLE_LOOKUP[n.toLowerCase()] = n; });
+// Accepted spelling variants, mapped to the canonical name above. The
+// un-hyphenated form is how the deity is usually written, so it's worth
+// matching in case the log ever uses it — either way it announces as
+// "Cazic-Thule".
+NOTABLE_LOOKUP['cazic thule'] = 'Cazic-Thule';
 
 // Returns the canonical name if this mob is notable, else null. Leading
 // articles are tolerated since the log sometimes includes them.
@@ -537,7 +538,6 @@ function recoverDifficultyFromLog(preloadedContent) {
       const m = lines[i].match(ZONE_ENTER_RE);
       if (m) {
         watchState.currentDifficulty = difficultyFromZone(m[1].trim());
-        realtimeDebugLog('ZONE — recovered difficulty ' + watchState.currentDifficulty + ' from "' + m[1].trim() + '"');
         return;
       }
     }
@@ -635,16 +635,23 @@ async function pollLogFile() {
   if (stats.size === watchState.lastSize) return;
 
   let chunk;
+  let fd = null;
   try {
-    const fd = fs.openSync(watchState.logPath, 'r');
+    fd = fs.openSync(watchState.logPath, 'r');
     const length = stats.size - watchState.lastSize;
     const buffer = Buffer.alloc(length);
     fs.readSync(fd, buffer, 0, length, watchState.lastSize);
-    fs.closeSync(fd);
     chunk = buffer.toString('utf8');
   } catch (e) {
     console.error('Error reading log file:', e);
     return;
+  } finally {
+    // Closed in `finally` so a read error can't leak the handle. This
+    // runs every 1.5 seconds, so a persistent failure would otherwise
+    // leak steadily until the app restarted.
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (e) { /* already closed — harmless */ }
+    }
   }
   watchState.lastSize = stats.size;
 
@@ -801,7 +808,6 @@ function flushNotableAnnouncement(key) {
   var verb = names.length === 1 ? ' has defeated ' : ' have defeated ';
   var suffix = (typeof entry.difficulty === 'number') ? (' on Difficulty ' + entry.difficulty) : '';
 
-  realtimeDebugLog('NOTABLE — announcing with ' + names.length + ' player(s): ' + names.join(', '));
   notify('Notable Kill!', formatPlayerList(names) + verb + entry.npc + suffix + '!', 'notable', {
     npc: entry.npc,
     difficulty: entry.difficulty,
@@ -819,6 +825,13 @@ function handleNotableKill(rawName) {
   var last = recentNotableKills[canonical];
   if (last && now - last < NOTABLE_DEDUPE_MS) return;
   recentNotableKills[canonical] = now;
+
+  // Drop entries that are past the dedupe window. The map is naturally
+  // small (one key per notable NPC), but leaving it to grow unbounded
+  // was the odd one out among the app's other tracking maps.
+  Object.keys(recentNotableKills).forEach(function (k) {
+    if (now - recentNotableKills[k] > NOTABLE_DEDUPE_MS) delete recentNotableKills[k];
+  });
 
   var diff = watchState.currentDifficulty;
   var who = watchState.characterName || 'You';
@@ -861,9 +874,6 @@ function processLogLine(line) {
     return;
   }
 
-  if (/\bentered\b/i.test(line)) {
-    realtimeDebugLog('ZONE — line contains "entered": ' + JSON.stringify(line));
-  }
   const whoMatch = line.match(WHO_LINE_RE);
   if (whoMatch) {
     handleWhoLine(parseInt(whoMatch[1], 10), whoMatch[2], whoMatch[3]);
@@ -886,7 +896,6 @@ function processLogLine(line) {
     // Recorded for every zone change, not just D4 characters — notable
     // kills are tagged with whatever difficulty the zone was.
     watchState.currentDifficulty = difficultyFromZone(zoneName);
-    realtimeDebugLog('ZONE — regex matched, zone="' + zoneName + '" characterActive=' + watchState.characterActive + ' characterD4=' + watchState.characterD4);
     if (watchState.characterActive && watchState.characterD4) {
       // "(Refined)" in the zone name means it's already a D4 zone — no
       // need to remind someone to do something they've already done.
@@ -894,9 +903,6 @@ function processLogLine(line) {
         // Purely local — a reminder for the person playing, not a group
         // event, so this never touches the backend or broadcasts to anyone.
         notify('D4 Reminder', "Don't forget to change to D4 difficulty!", 'd4');
-        realtimeDebugLog('ZONE — D4 reminder notification fired');
-      } else {
-        realtimeDebugLog('ZONE — skipped, zone already (Refined)');
       }
     }
     return;
@@ -994,7 +1000,6 @@ function connectRealtime() {
     var rawType = Buffer.isBuffer(data) ? 'Buffer' : typeof data;
     var rawText;
     try { rawText = data.toString('utf8'); } catch (e) { rawText = '(could not convert to string: ' + e.message + ')'; }
-    realtimeDebugLog('MESSAGE received — raw type=' + rawType + ' content=' + rawText);
 
     var msg = null;
     try { msg = JSON.parse(rawText); } catch (e) {
@@ -1015,22 +1020,32 @@ function connectRealtime() {
     }
 
     if (msg && msg.type === 'ping') {
-      realtimeDebugLog('MESSAGE — recognized as ping, attempting to send pong');
       // Server-side heartbeat check — answer it so this connection isn't
       // mistaken for dead and pruned, but this isn't new data, so don't
       // trigger a poll for it.
       try {
         ws.send(JSON.stringify({ type: 'pong' }));
-        realtimeDebugLog('MESSAGE — pong sent successfully. readyState=' + ws.readyState);
       } catch (e) {
         realtimeDebugLog('MESSAGE — pong send THREW: ' + e.message);
       }
       return;
     }
 
-    realtimeDebugLog('MESSAGE — not a ping (parsed type=' + (msg && msg.type) + '), triggering poll');
-    // Anything else means "something changed" — the existing poll
-    // fetches the real, current data regardless of this message's content.
+    // The broadcast carries the full entry, so announce straight from it
+    // rather than waiting to re-read the shared log.
+    //
+    // This matters more than it looks: Cloudflare KV has no atomic
+    // append, so two players acting in the same instant can each
+    // read-append-write and have the second write clobber the first.
+    // The clobbered entry is gone from the log forever — but it WAS
+    // delivered here over the socket. Announcing from the payload means
+    // a lost write no longer means a lost notification.
+    if (msg && msg.type === 'entry' && msg.entry) {
+      announceSharedEntry(msg.entry);
+    }
+
+    // Still poll, so the leaderboard and Adventure Log pick up the
+    // authoritative log state.
     pollWithConsistencyRetries();
   });
 
@@ -1096,6 +1111,47 @@ function setupPowerMonitorHandling() {
   });
 }
 
+// Announces one shared-log entry from another player. Called both from
+// the live WebSocket payload and from the poll, so it dedupes on a key
+// built from the entry's own identity — whichever path arrives first
+// wins and the other is ignored.
+var announcedEntries = {};
+var ANNOUNCED_TTL_MS = 10 * 60 * 1000;
+
+function announceSharedEntry(entry) {
+  if (!entry || !entry.type) return;
+  const s = loadSettings();
+  if (entry.name === s.username) return; // our own events are announced locally already
+  if (entry.silent) return; // a leaderboard/log correction, not a live event
+
+  var key = entry.name + '|' + entry.type + '|' + entry.time;
+  var now = Date.now();
+  if (announcedEntries[key]) return;
+  announcedEntries[key] = now;
+
+  // Occasional prune so this can't grow without bound over a long session.
+  if (Object.keys(announcedEntries).length > 400) {
+    Object.keys(announcedEntries).forEach(function (k) {
+      if (now - announcedEntries[k] > ANNOUNCED_TTL_MS) delete announcedEntries[k];
+    });
+  }
+
+  if (entry.type === 'died') {
+    notify('Death Announcement', entry.name + ' died at level ' + (entry.level || '?') + '.', 'death');
+  } else if (entry.type === 'ding') {
+    notify('Level 50!', entry.name + ' reached level 50!', 'ding');
+  } else if (entry.type === 'levelup') {
+    notify('Level Up!', entry.name + ' reached level ' + entry.level + '.', 'levelup');
+  } else if (entry.type === 'notable') {
+    queueNotableAnnouncement(entry.npc, entry.difficulty, entry.name,
+      chatColorsByUser[entry.name] || null);
+  } else if (entry.type === 'achievement') {
+    chatAnnounce(entry.name + ' has earned an achievement! - ' + entry.achievement, 'achievement');
+  } else if (entry.type === 'aa') {
+    notify('AA Gained!', entry.name + ' has gained an AA! (now has ' + entry.aaTotal + ' ability point' + (entry.aaTotal === 1 ? '' : 's') + ')', 'aa');
+  }
+}
+
 async function pollSharedLog() {
   if (pollInFlight) return null; // a previous poll hasn't finished yet — skip this tick rather than risk double-processing the same entries
   pollInFlight = true;
@@ -1125,11 +1181,9 @@ function pollWithConsistencyRetries() {
     pollSharedLog().then(function (foundSomething) {
       if (foundSomething !== false) return; // true = found it, null = skipped/errored — neither needs a consistency retry
       if (retryIndex >= CONSISTENCY_RETRY_DELAYS_MS.length) {
-        realtimeDebugLog('POLL — gave up after ' + retryIndex + ' consistency retries (~60s); waiting for the next natural trigger');
         return;
       }
       var delay = CONSISTENCY_RETRY_DELAYS_MS[retryIndex];
-      realtimeDebugLog('POLL — came back clean but found nothing new yet; retry ' + (retryIndex + 1) + '/' + CONSISTENCY_RETRY_DELAYS_MS.length + ' in ' + delay + 'ms');
       setTimeout(function () { attemptWithRetries(retryIndex + 1); }, delay);
     });
   }
@@ -1138,7 +1192,6 @@ function pollWithConsistencyRetries() {
 async function pollSharedLogInner() {
   const s = loadSettings();
   if (!s.apiBaseUrl || !s.token) return null;
-  realtimeDebugLog('POLL — starting fetch of shared log');
   try {
     // An explicit timeout matters here specifically: without one, a
     // request that hangs (rather than cleanly failing) would leave
@@ -1157,7 +1210,6 @@ async function pollSharedLogInner() {
     } finally {
       clearTimeout(timeoutId);
     }
-    realtimeDebugLog('POLL — fetch completed, status=' + res.status);
     const data = await res.json().catch(function () { return null; });
     if (!data || typeof data.value !== 'string') return null;
     const log = JSON.parse(data.value);
@@ -1172,27 +1224,7 @@ async function pollSharedLogInner() {
 
     if (log.length > lastSeenLogLength) {
       const newEntries = log.slice(lastSeenLogLength);
-      newEntries.forEach(function (entry) {
-        if (entry.name === s.username) return; // already notified locally via the log watcher
-        if (entry.silent) return; // a leaderboard/log correction, not a live event worth announcing
-        if (entry.type === 'died') {
-          notify('Death Announcement', entry.name + ' died at level ' + (entry.level || '?') + '.', 'death');
-        } else if (entry.type === 'ding') {
-          notify('Level 50!', entry.name + ' reached level 50!', 'ding');
-        } else if (entry.type === 'levelup') {
-          notify('Level Up!', entry.name + ' reached level ' + entry.level + '.', 'levelup');
-        } else if (entry.type === 'notable') {
-          // Joins the same pending announcement as any local kill of the
-          // same NPC, so a group effort produces one combined message.
-          realtimeDebugLog('NOTABLE — received from group: ' + entry.name + ' / ' + entry.npc + ' / D' + entry.difficulty);
-          queueNotableAnnouncement(entry.npc, entry.difficulty, entry.name,
-            chatColorsByUser[entry.name] || null);
-        } else if (entry.type === 'achievement') {
-          chatAnnounce(entry.name + ' has earned an achievement! - ' + entry.achievement, 'achievement');
-        } else if (entry.type === 'aa') {
-          notify('AA Gained!', entry.name + ' has gained an AA! (now has ' + entry.aaTotal + ' ability point' + (entry.aaTotal === 1 ? '' : 's') + ')', 'aa');
-        }
-      });
+      newEntries.forEach(announceSharedEntry);
       sendToRenderer('log-updated', log);
       // Only ever move forward. Cloudflare KV has eventual consistency —
       // a read can occasionally come back momentarily stale/shorter than a
@@ -1359,7 +1391,8 @@ ipcMain.handle('group-changed', function () {
 const ALLOWED_EXTERNAL_LINKS = [
   'https://eqlwiki.com/',
   'https://eqlposky.com/',
-  'https://jmoyers.github.io/everquest-companion/'
+  'https://jmoyers.github.io/everquest-companion/',
+  'https://github.com/VitheGit/EQL-Randomizer'
 ];
 
 ipcMain.handle('open-external-link', function (event, url) {

@@ -2,6 +2,12 @@
   var stack = document.getElementById('stack');
   var counter = 0;
 
+  // Shared with the main and overlay windows — see render-utils.js.
+  var escapeHtml = window.EQL_RENDER.escapeHtml;
+  function highlightMeta(text, meta) {
+    return window.EQL_RENDER.highlightMeta(text, meta);
+  }
+
   var ICONS = {
     death: '&#128128;',
     ding: '&#127881;',
@@ -44,60 +50,6 @@
       s.audio.currentTime = 0;
       s.audio.play().catch(function () { /* browser autoplay quirks — not worth surfacing to the user */ });
     } catch (e) { /* ignore playback errors */ }
-  }
-
-  // Wraps a known substring (the NPC name on notable kills) after
-  // Wraps known substrings (the NPC name, and the "Difficulty N" tag) so
-  // each can be styled. Ranges are collected against the ESCAPED text and
-  // applied in order, so inserting markup for one can't shift the offsets
-  // of the other.
-  function highlightMeta(text, meta) {
-    var safe = escapeHtml(text);
-    if (!meta) return safe;
-
-    var ranges = [];
-    function addRange(needleRaw, cls, inlineColor) {
-      if (!needleRaw) return;
-      var needle = escapeHtml(needleRaw);
-      var idx = safe.indexOf(needle);
-      if (idx === -1) return;
-      ranges.push({ start: idx, end: idx + needle.length, cls: cls, color: inlineColor || null });
-    }
-
-    // The player's own chosen chat color is applied inline, since it's a
-    // per-person value rather than one of a fixed set of classes.
-    // A kill can credit several players, so colour each name with that
-    // person's own choice. Single-player kills still use meta.player.
-    if (meta.players && meta.players.length) {
-      meta.players.forEach(function (name) {
-        addRange(name, 'player', (meta.playerColors || {})[name] || null);
-      });
-    } else {
-      addRange(meta.player, 'player', meta.playerColor);
-    }
-    addRange(meta.npc, 'npc');
-    if (typeof meta.difficulty === 'number') {
-      addRange('Difficulty ' + meta.difficulty, 'diff diff-' + meta.difficulty);
-    }
-    if (!ranges.length) return safe;
-
-    ranges.sort(function (a, b) { return a.start - b.start; });
-    var out = '';
-    var cursor = 0;
-    ranges.forEach(function (r) {
-      if (r.start < cursor) return; // overlapping — skip rather than corrupt
-      var style = r.color ? ' style="color:' + escapeHtml(r.color) + ';"' : '';
-      out += safe.slice(cursor, r.start) +
-        '<span class="' + r.cls + '"' + style + '>' + safe.slice(r.start, r.end) + '</span>';
-      cursor = r.end;
-    });
-    return out + safe.slice(cursor);
-  }
-
-  function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
   }
 
   function addToast(payload) {

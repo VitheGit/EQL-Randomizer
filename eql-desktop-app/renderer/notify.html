@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'none'">
 <style>
   html, body {
     margin: 0; padding: 0; background: transparent; overflow: hidden;
@@ -72,6 +73,7 @@
 </head>
 <body>
   <div id="stack"></div>
-  <script src="notify.js"></script>
+  <script src="render-utils.js"></script>
+<script src="notify.js"></script>
 </body>
 </html>

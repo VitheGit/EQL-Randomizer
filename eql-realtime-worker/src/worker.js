@@ -17,6 +17,17 @@
 // input: it keeps everything readable against the parchment background,
 // and means a client can never inject arbitrary values into what other
 // people render.
+// Inserts an entry so the log stays in chronological order — used when
+// rebuilding a roll entry that belongs earlier in the timeline.
+function insertChronologically(log, entry) {
+  const at = new Date(entry.time).getTime();
+  const idx = log.findIndex(function (e) {
+    return e && e.time && new Date(e.time).getTime() > at;
+  });
+  if (idx === -1) log.push(entry);
+  else log.splice(idx, 0, entry);
+}
+
 // How long an offline member stays listed before being forgotten.
 const MEMBER_TTL_MS = 5 * 24 * 60 * 60 * 1000; // 5 days
 
@@ -72,7 +83,30 @@ export class GroupRoom {
     // "who's currently connected," not anything this class remembers.
   }
 
+  // A Durable Object only knows its opaque ID, not the group name it was
+  // created from — so the router passes the key in on each request and
+  // the room remembers it. Persisted because hibernation wipes memory,
+  // and the heartbeat alarm runs with no request to read a header from.
+  label() {
+    return '[GroupRoom ' + (this.roomKey || '?') + ']';
+  }
+
+  async rememberGroupKey(request) {
+    var key = request && request.headers ? request.headers.get('X-EQL-Group') : null;
+    if (key) {
+      if (this.roomKey !== key) {
+        this.roomKey = key;
+        try { await this.state.storage.put('groupKey', key); } catch (e) { /* non-critical */ }
+      }
+      return;
+    }
+    if (!this.roomKey) {
+      try { this.roomKey = await this.state.storage.get('groupKey'); } catch (e) { /* non-critical */ }
+    }
+  }
+
   async fetch(request) {
+    await this.rememberGroupKey(request);
     const url = new URL(request.url);
 
     if (url.pathname === '/connect') {
@@ -96,15 +130,73 @@ export class GroupRoom {
         username: request.headers.get('X-EQL-Username') || null,
         lastChatAt: 0
       });
-      console.log('[GroupRoom] connection accepted. Total sockets now:', this.state.getWebSockets().length);
+      console.log(this.label() + ' connection accepted. Total sockets now:', this.state.getWebSockets().length);
       await this.ensureHeartbeatScheduled();
       return new Response(null, { status: 101, webSocket: client });
+    }
+
+    // Appends to the group's shared log with the read-modify-write held
+    // under a lock.
+    //
+    // Cloudflare KV has no atomic append, so when this was done directly
+    // in the backend two players acting in the same instant would each
+    // read the same log, append their own entry, and write back — the
+    // second write silently discarding the first. The lost entry never
+    // reached the Adventure Log or the Leaderboard.
+    //
+    // A Durable Object is single-instance per group, and
+    // blockConcurrencyWhile guarantees no other request interleaves at
+    // an await point, so appends here are strictly serialized.
+    if (url.pathname === '/append' && request.method === 'POST') {
+      const payload = await request.json();
+      const logKey = payload.logKey;
+      if (!logKey || !payload.entry) {
+        return new Response(JSON.stringify({ error: 'Missing logKey or entry.' }), {
+          status: 400, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      let appended = false;
+      let rollRestored = false;
+      await this.state.blockConcurrencyWhile(async () => {
+        const raw = await this.env.EQL_KV.get(logKey);
+        const log = raw ? JSON.parse(raw) : [];
+
+        // Optional: rebuild a missing roll entry for this character. The
+        // existence check has to happen inside the lock too, against the
+        // same snapshot we're about to write.
+        if (payload.ensureRoll) {
+          const er = payload.ensureRoll;
+          const rolledMs = er.time ? new Date(er.time).getTime() : null;
+          const has = log.some(function (e) {
+            if (!e || e.type !== 'roll' || e.name !== er.name) return false;
+            if (rolledMs === null) return true;
+            const t = new Date(e.time).getTime();
+            return !isNaN(t) && Math.abs(t - rolledMs) < 5000;
+          });
+          if (!has) {
+            insertChronologically(log, er);
+            rollRestored = true;
+          }
+        }
+
+        log.push(payload.entry);
+        await this.env.EQL_KV.put(logKey, JSON.stringify(log));
+        appended = true;
+      });
+
+      if (appended) {
+        this.broadcast(JSON.stringify({ type: 'entry', entry: payload.entry }));
+      }
+      return new Response(JSON.stringify({ ok: true, rollRestored: rollRestored }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     if (url.pathname === '/broadcast' && request.method === 'POST') {
       const payload = await request.json();
       const socketCount = this.state.getWebSockets().length;
-      console.log('[GroupRoom] broadcast received. Connected sockets in this room:', socketCount, '| entry type:', payload.entry && payload.entry.type);
+      console.log(this.label() + ' broadcast received. Connected sockets in this room:', socketCount, '| entry type:', payload.entry && payload.entry.type);
       this.broadcast(JSON.stringify({ type: 'entry', entry: payload.entry }));
       return json({ ok: true, delivered: socketCount });
     }
@@ -131,7 +223,17 @@ export class GroupRoom {
   async alarm() {
     const sockets = this.state.getWebSockets();
     const now = Date.now();
-    console.log('[GroupRoom] heartbeat check — sockets:', sockets.length);
+    if (!this.roomKey) {
+      try { this.roomKey = await this.state.storage.get('groupKey'); } catch (e) { /* non-critical */ }
+    }
+    console.log(this.label() + ' heartbeat check — sockets:', sockets.length);
+
+    // Rebroadcast the roster each cycle. Presence was previously only
+    // pushed on join/leave, so any client that missed one — or was fed a
+    // momentarily wrong list — stayed wrong until it reconnected. This
+    // makes every client self-correct within one heartbeat. Outgoing
+    // WebSocket messages aren't billed, so this costs nothing.
+    try { await this.broadcastRoster(); } catch (e) { /* non-critical */ }
 
     sockets.forEach(function (ws, i) {
       var lastPong = now;
@@ -170,8 +272,20 @@ export class GroupRoom {
   // right after a hibernation wake-up, when this class has just been
   // freshly re-constructed with no memory of prior state.
   async webSocketMessage(ws, message) {
-    let att = {};
-    try { att = ws.deserializeAttachment() || {}; } catch (e) { att = {}; }
+    // If this comes back empty we must NOT write a replacement — doing so
+    // would erase the socket's username, and since a nameless socket
+    // still ponges happily it would never be pruned, it would just
+    // silently vanish from the roster until the client reconnected.
+    let att = null;
+    let attReadOk = false;
+    try {
+      att = ws.deserializeAttachment();
+      attReadOk = !!(att && typeof att === 'object');
+    } catch (e) { attReadOk = false; }
+    if (!attReadOk) {
+      console.log(this.label() + ' WARNING: could not read socket attachment; leaving it untouched');
+      att = {};
+    }
 
     let data = null;
     try {
@@ -184,9 +298,13 @@ export class GroupRoom {
 
     if (data.type === 'pong') {
       // Merge rather than replace — the attachment also carries the
-      // socket's username, which must survive every heartbeat.
-      att.lastPong = Date.now();
-      ws.serializeAttachment(att);
+      // socket's username, which must survive every heartbeat. Skip the
+      // write entirely if we couldn't read it, rather than clobbering a
+      // good attachment with a bare timestamp.
+      if (attReadOk) {
+        att.lastPong = Date.now();
+        ws.serializeAttachment(att);
+      }
       return;
     }
 
@@ -367,7 +485,37 @@ export default {
       // so nobody can post under someone else's name.
       const fwd = new Request(request, request);
       fwd.headers.set('X-EQL-Username', username);
+      // The room can't derive its own group key (Durable Objects only
+      // know their opaque ID), so pass it in for log labelling.
+      fwd.headers.set('X-EQL-Group', groupKey);
       return stub.fetch(fwd);
+    }
+
+    if (url.pathname === '/append' && request.method === 'POST') {
+      const secret = request.headers.get('X-Broadcast-Secret') || '';
+      if (!env.BROADCAST_SECRET || secret !== env.BROADCAST_SECRET) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+      let payload;
+      try {
+        payload = await request.json();
+      } catch (e) {
+        return json({ error: 'Invalid request.' }, 400);
+      }
+      if (!payload.username || !payload.entry) {
+        return json({ error: 'Missing username or entry.' }, 400);
+      }
+      const appendGroupKey = groupKeyFor(payload.username, payload.group);
+      // Derived here rather than trusted from the caller, so the key can
+      // never point somewhere other than the room doing the locking.
+      payload.logKey = 'log:' + appendGroupKey;
+      const appendId = env.GROUP_ROOM.idFromName(appendGroupKey);
+      const appendStub = env.GROUP_ROOM.get(appendId);
+      return appendStub.fetch(new Request('https://internal/append', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-EQL-Group': appendGroupKey },
+        body: JSON.stringify(payload)
+      }));
     }
 
     if (url.pathname === '/broadcast' && request.method === 'POST') {
@@ -390,7 +538,7 @@ export default {
       const stub = env.GROUP_ROOM.get(id);
       const forwardRequest = new Request('https://internal/broadcast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-EQL-Group': groupKey },
         body: JSON.stringify(payload)
       });
       return stub.fetch(forwardRequest);

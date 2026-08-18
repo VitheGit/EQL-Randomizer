@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src https:">
 <title>EQ Legends Randomizer</title>
 <style>
   * { box-sizing: border-box; }
@@ -253,6 +254,35 @@
   }
   .chat-emoji-panel button:hover { background: rgba(42,32,22,0.12); }
   /* Opacity, name-color swatches and the overlay toggle share one row. */
+  .patch-scroll { max-height: 320px; overflow-y: auto; padding-right: 6px; }
+  .patch-release { margin-bottom: 14px; }
+  .patch-version {
+    font-size: 12px; font-weight: 800; color: var(--ember);
+    letter-spacing: 0.06em; margin-bottom: 4px; text-align: left;
+  }
+  .patch-current {
+    font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--moss); border: 1px solid var(--moss); border-radius: 3px;
+    padding: 1px 4px; vertical-align: 1px; margin-left: 4px;
+  }
+  .patch-list { margin: 0; padding-left: 18px; }
+  .patch-list li { font-size: 12px; line-height: 1.55; margin-bottom: 4px; }
+
+  .instr-intro { font-size: 13px; line-height: 1.6; margin: 0 0 16px; }
+  .instr-section { margin-bottom: 18px; }
+  .instr-heading {
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--moss); margin: 0 0 6px; text-align: left;
+  }
+  .instr-note { font-size: 12px; font-style: italic; color: var(--ink-soft); margin: 0 0 8px; text-align: left; }
+  .instr-list { margin: 0; padding-left: 20px; }
+  .instr-list li { font-size: 13px; line-height: 1.6; margin-bottom: 7px; }
+  .instr-label { color: var(--ember); }
+  .instr-link { color: var(--ember); text-decoration: underline; cursor: pointer; word-break: break-all; }
+  .instr-closing { border-top: 1px solid var(--bronze); padding-top: 12px; margin-top: 4px; }
+  .instr-closing p { font-size: 13px; line-height: 1.6; margin: 0 0 10px; }
+  .instr-signoff { font-style: italic; color: var(--ink-soft); text-align: right; }
+
   .chat-controls-row { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .chat-opacity-label { font-size: 11px; color: var(--ink-soft); font-style: italic; white-space: nowrap; flex-shrink: 0; }
   .chat-controls-row input[type="range"] { flex: 1; min-width: 70px; }
@@ -402,7 +432,10 @@
 </head>
 <body>
   <div id="app"></div>
-  <script src="emoji.js"></script>
+  <script src="render-utils.js"></script>
+<script src="emoji.js"></script>
+<script src="instructions.js"></script>
+<script src="patchnotes.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

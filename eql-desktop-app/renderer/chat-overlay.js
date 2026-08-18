@@ -5,63 +5,16 @@
   var sendBtn = document.getElementById('send');
   var closeBtn = document.getElementById('close');
 
+  // Shared with the main and toast windows — see render-utils.js.
+  var escapeHtml = window.EQL_RENDER.escapeHtml;
+  var formatTime = window.EQL_RENDER.formatClockTime;
+  function highlightMeta(text, meta) {
+    return window.EQL_RENDER.highlightMeta(text, meta);
+  }
+
   var messages = [];
   var MAX = 200;
   var myUsername = '';
-
-  function escapeHtml(str) {
-    return String(str == null ? '' : str)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  // Wraps a known substring (the NPC name) after escaping, so it can be
-  // Wraps known substrings (the NPC name, and the "Difficulty N" tag) so
-  // each can be styled. Ranges are collected against the ESCAPED text and
-  // applied in order, so inserting markup for one can't shift the offsets
-  // of the other.
-  function highlightMeta(text, meta) {
-    var safe = escapeHtml(text);
-    if (!meta) return safe;
-
-    var ranges = [];
-    function addRange(needleRaw, cls, inlineColor) {
-      if (!needleRaw) return;
-      var needle = escapeHtml(needleRaw);
-      var idx = safe.indexOf(needle);
-      if (idx === -1) return;
-      ranges.push({ start: idx, end: idx + needle.length, cls: cls, color: inlineColor || null });
-    }
-
-    // The player's own chosen chat color is applied inline, since it's a
-    // per-person value rather than one of a fixed set of classes.
-    // A kill can credit several players, so colour each name with that
-    // person's own choice. Single-player kills still use meta.player.
-    if (meta.players && meta.players.length) {
-      meta.players.forEach(function (name) {
-        addRange(name, 'player', (meta.playerColors || {})[name] || null);
-      });
-    } else {
-      addRange(meta.player, 'player', meta.playerColor);
-    }
-    addRange(meta.npc, 'npc');
-    if (typeof meta.difficulty === 'number') {
-      addRange('Difficulty ' + meta.difficulty, 'diff diff-' + meta.difficulty);
-    }
-    if (!ranges.length) return safe;
-
-    ranges.sort(function (a, b) { return a.start - b.start; });
-    var out = '';
-    var cursor = 0;
-    ranges.forEach(function (r) {
-      if (r.start < cursor) return; // overlapping — skip rather than corrupt
-      var style = r.color ? ' style="color:' + escapeHtml(r.color) + ';"' : '';
-      out += safe.slice(cursor, r.start) +
-        '<span class="' + r.cls + '"' + style + '>' + safe.slice(r.start, r.end) + '</span>';
-      cursor = r.end;
-    });
-    return out + safe.slice(cursor);
-  }
 
   // The name-color palette was picked to read against the light parchment
   // of the main window. Several of those colors (Ink especially) all but
@@ -115,16 +68,6 @@
       return n.length === 1 ? '0' + n : n;
     }
     return '#' + toHex(rr) + toHex(gg) + toHex(bb);
-  }
-
-  function formatTime(iso) {
-    try {
-      var d = new Date(iso);
-      var h = d.getHours(), m = d.getMinutes();
-      var ampm = h >= 12 ? 'PM' : 'AM';
-      h = h % 12; if (h === 0) h = 12;
-      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
-    } catch (e) { return ''; }
   }
 
   function render() {

@@ -1,8 +1,7 @@
 import { getUsernameFromRequest } from '../_lib/auth-crypto.js';
 import { getUser, saveUser } from '../_lib/auth-users.js';
-import { logKeyFor } from '../_lib/groups.js';
-import { ensureRollEntry } from '../_lib/ensure-roll-entry.js';
-import { broadcastEntry } from '../_lib/broadcast.js';
+import { buildRollEntry } from '../_lib/ensure-roll-entry.js';
+import { appendLogEntry } from '../_lib/append-log.js';
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -73,15 +72,13 @@ export async function onRequestPost(context) {
     }
   }
 
-  const logRaw = await env.EQL_KV.get(logKeyFor(user));
-  const log = logRaw ? JSON.parse(logRaw) : [];
-  // If the log was cleared while this character was active, its roll
-  // entry is gone — restore it so the character reappears on the
-  // leaderboard/log with its run duration intact.
-  ensureRollEntry(log, username, character);
-  log.push(entry);
-  await env.EQL_KV.put(logKeyFor(user), JSON.stringify(log));
-  context.waitUntil(broadcastEntry(env, username, user.group, entry));
+  // Appended through the realtime worker so simultaneous writes from
+  // different players can't clobber each other. `ensureRoll` restores a
+  // roll entry that was cleared while this character was active.
+  await appendLogEntry(context, user, entry, {
+    ensureRoll: buildRollEntry(username, character),
+    character: character
+  });
 
   user.currentCharacter = null;
   await saveUser(env, user);

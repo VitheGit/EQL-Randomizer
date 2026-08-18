@@ -34,7 +34,27 @@ export function ensureRollEntry(log, username, character) {
   });
   if (hasRoll) return log;
 
-  const rebuilt = {
+  const rebuilt = buildRollEntry(username, character);
+
+  // Insert in timestamp order so the log stays chronological — the
+  // rebuilt entry belongs back where the original was, not at the end.
+  const idx = log.findIndex(function (e) {
+    return e && e.time && new Date(e.time) > new Date(rebuilt.time);
+  });
+  if (idx === -1) {
+    log.push(rebuilt);
+  } else {
+    log.splice(idx, 0, rebuilt);
+  }
+  return log;
+}
+
+// Builds the roll entry for a character. Exported so the append path can
+// hand a ready-made entry to the Durable Object, which does the
+// existence check under its lock without needing to know the shape of a
+// character record.
+export function buildRollEntry(username, character) {
+  return {
     type: 'roll',
     // Falling back to "now" only affects characters rolled before
     // rolledAt was recorded; their duration will read as near-zero
@@ -56,16 +76,4 @@ export function ensureRollEntry(log, username, character) {
     // anyone inspects the raw data later.
     reconstructed: true
   };
-
-  // Insert in timestamp order so the log stays chronological — the
-  // rebuilt entry belongs back where the original was, not at the end.
-  const idx = log.findIndex(function (e) {
-    return e && e.time && new Date(e.time) > new Date(rebuilt.time);
-  });
-  if (idx === -1) {
-    log.push(rebuilt);
-  } else {
-    log.splice(idx, 0, rebuilt);
-  }
-  return log;
 }

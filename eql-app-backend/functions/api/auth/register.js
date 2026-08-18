@@ -44,6 +44,17 @@ export async function onRequestPost(context) {
   };
   await saveUser(env, userRecord);
 
+  // Re-read after writing. KV has no compare-and-set, so two people
+  // registering the same name at the same moment could both pass the
+  // check above and the second write would silently replace the first —
+  // taking over an account that isn't theirs. Confirming our own record
+  // survived closes that window: if someone else's write landed last, we
+  // back out rather than hand over a hijacked session.
+  const confirmed = await getUser(env, username);
+  if (!confirmed || confirmed.createdAt !== userRecord.createdAt) {
+    return json({ error: 'That username was just taken. Please try another.' }, 409);
+  }
+
   const token = await createSession(env, userRecord.username);
   return json({ token: token, username: userRecord.username, currentCharacter: null, group: '' });
 }
